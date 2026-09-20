@@ -16,16 +16,18 @@ SEGMENT_SAMPLES = int(SAMPLE_RATE * SEGMENT_SECONDS)
 class InstrumentalHTDemucs(torch.nn.Module):
     def __init__(self, model):
         super().__init__()
-        self.model = model
-        self.non_vocal_sources = [name for name in model.sources if name != "vocals"]
+        inner = getattr(model, "models", [model])[0]
+        self.model = inner
+        self.source_names = inner.sources
+        self.non_vocal_indices = [i for i, name in enumerate(inner.sources) if name != "vocals"]
 
     def forward(self, waveform: torch.Tensor):
         ref = waveform.mean(dim=0)
         mean = ref.mean()
         std = ref.std() + 1e-8
         normalized = (waveform - mean) / std
-        sources = self.model(normalized[None])[0]
-        instrumental = sum(sources[name] for name in self.non_vocal_sources)
+        sources = self.model(normalized)[0]
+        instrumental = sum(sources[i] for i in self.non_vocal_indices)
         return (instrumental * std + mean).clamp(-1.0, 1.0)
 
 
@@ -41,6 +43,7 @@ def export(output_path: Path, validate: bool = False) -> None:
         wrapper,
         dummy,
         str(output_path),
+        dynamo=False,
         input_names=["input"],
         output_names=["instrumental"],
         opset_version=17,
