@@ -1,0 +1,29 @@
+# Media and local processing artifacts
+*.mp4
+*.mp3
+*.wav
+*.flac
+.venv/
+.hf_cache/
+48tools-reference/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/*/build/
+android/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Model binary is managed by Git LFS
+android/app/src/main/assets/models/*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
