@@ -1,5 +1,6 @@
 package com.nora.douyinremover.audio
 
+import android.util.Log
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,29 +15,39 @@ class AudioProcessor(
         workDir.mkdirs()
 
         val rawPath = File(workDir, "extracted.f32le").absolutePath
+        val separatedPath = File(workDir, "instrumental.f32le").absolutePath
         val encodedPath = File(workDir, "instrumental_encoded.${request.outputFormat}").absolutePath
 
+        Log.i(TAG, "stage=extract begin ${request.inputPath}")
         val extracted = encoder.extractPcm(request.inputPath, rawPath)
-        val pcm = readFloatPcm(rawPath)
-        val instrumental = separator.separateToInstrumental(pcm, extracted.channels, extracted.sampleRate)
-        writeFloatPcm(rawPath, instrumental)
-        encoder.encodePcm(
-            rawPath = rawPath,
-            outputPath = encodedPath,
-            format = request.outputFormat,
-            bitrateKbps = request.bitrateKbps,
-            sampleRate = extracted.sampleRate,
-            channels = extracted.channels
-        )
+        Log.i(TAG, "stage=extract done durationMs=${extracted.durationMs}")
+        try {
+            // 流式分段分离：输入/输出都走文件，任意时刻内存中只保留一个推理段（约 5MB）
+            Log.i(TAG, "stage=separate begin")
+            separator.separateToInstrumentalFile(rawPath, separatedPath, extracted.channels, extracted.sampleRate)
+            Log.i(TAG, "stage=separate done")
+            encoder.encodePcm(
+                rawPath = separatedPath,
+                outputPath = encodedPath,
+                format = request.outputFormat,
+                bitrateKbps = request.bitrateKbps,
+                sampleRate = extracted.sampleRate,
+                channels = extracted.channels
+            )
+            Log.i(TAG, "stage=encode done")
 
-        if (request.silenceThresholdDb < 0f) {
-            encoder.trimSilence(encodedPath, request.outputPath, request.silenceThresholdDb, request.bitrateKbps)
-        } else {
-            File(encodedPath).copyTo(File(request.outputPath), overwrite = true)
+            if (request.silenceThresholdDb < 0f) {
+                encoder.trimSilence(encodedPath, request.outputPath, request.silenceThresholdDb, request.bitrateKbps)
+            } else {
+                File(encodedPath).copyTo(File(request.outputPath), overwrite = true)
+            }
+            Log.i(TAG, "stage=finalize done -> ${request.outputPath}")
+        } finally {
+            File(rawPath).delete()
+            File(separatedPath).delete()
+            File(encodedPath).delete()
         }
 
-        File(rawPath).delete()
-        File(encodedPath).delete()
         SeparationResult(
             outputPath = request.outputPath,
             sampleRate = extracted.sampleRate,
@@ -45,29 +56,7 @@ class AudioProcessor(
         )
     }
 
-    private fun readFloatPcm(path: String): FloatArray {
-        val bytes = File(path).readBytes()
-        val values = FloatArray(bytes.size / 4)
-        for (index in values.indices) {
-            val bitOffset = index * 4
-            val bits = ((bytes[bitOffset].toInt() and 0xff)) or
-                ((bytes[bitOffset + 1].toInt() and 0xff) shl 8) or
-                ((bytes[bitOffset + 2].toInt() and 0xff) shl 16) or
-                ((bytes[bitOffset + 3].toInt() and 0xff) shl 24)
-            values[index] = Float.fromBits(bits)
-        }
-        return values
-    }
-
-    private fun writeFloatPcm(path: String, values: FloatArray) {
-        val bytes = ByteArray(values.size * 4)
-        values.forEachIndexed { index, value ->
-            val bits = value.toRawBits()
-            bytes[index * 4] = bits.toByte()
-            bytes[index * 4 + 1] = (bits shr 8).toByte()
-            bytes[index * 4 + 2] = (bits shr 16).toByte()
-            bytes[index * 4 + 3] = (bits shr 24).toByte()
-        }
-        File(path).writeBytes(bytes)
+    private companion object {
+        const val TAG = "AudioProcessor"
     }
 }
