@@ -35,3 +35,9 @@ android/app/src/main/assets/models/*.onnx
 # OS
 .DS_Store
 Thumbs.db
+
+# Local debug/scan artifacts (not part of the app)
+tools/
+.mimosa/
+android/.mimosa/
+node_modules/

@@ -46,13 +46,17 @@ data class AwemePostResponse(
 data class AwemeItem(
     val desc: String = "",
     val video: AwemeVideo? = null,
-    val images: List<AwemeImage> = emptyList(),
+    // 抖音接口对纯视频会返回 "images": null，需显式容错（默认值只对字段缺失生效，对显式 null 无效）
+    @SerialName("images")
+    val imagesRaw: List<AwemeImage>? = null,
     @SerialName("aweme_id")
     val awemeId: String = "",
     @SerialName("create_time")
     val createTime: Long = 0,
     val author: AwemeAuthor = AwemeAuthor()
-)
+) {
+    val images: List<AwemeImage> get() = imagesRaw.orEmpty()
+}
 
 @Serializable
 data class AwemeVideo(
