@@ -25,7 +25,10 @@ class OnnxDemucsSeparator(
     private val fp16ModelAssetPath: String = "models/htdemucs_fp16.onnx",
     private val useNnapi: Boolean = true
 ) : AudioSeparator {
-    private val ortEnvironment = OrtEnvironment.getEnvironment()
+    private val ortEnvironment: OrtEnvironment by lazy {
+        Log.i(TAG, "initializing OrtEnvironment")
+        OrtEnvironment.getEnvironment()
+    }
 
     private val isLowMemoryDevice: Boolean by lazy {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -33,12 +36,15 @@ class OnnxDemucsSeparator(
         val memInfo = android.app.ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
         val totalMem = (memInfo.totalMem / (1024 * 1024)).toInt()
-        val isEmulator = android.os.Build.FINGERPRINT.contains("generic") ||
-            android.os.Build.MODEL.contains("Emulator") ||
-            android.os.Build.MODEL.contains("sdk_gphone")
         val low = isEmulator || totalMem < 4000 || memClass < 192
         Log.i(TAG, "device: emulator=$isEmulator totalMemMB=$totalMem memClassMB=$memClass lowMemory=$low")
         low
+    }
+
+    private val isEmulator: Boolean by lazy {
+        android.os.Build.FINGERPRINT.contains("generic") ||
+            android.os.Build.MODEL.contains("Emulator") ||
+            android.os.Build.MODEL.contains("sdk_gphone")
     }
 
     private val activeModelAsset: String by lazy {
@@ -95,15 +101,27 @@ class OnnxDemucsSeparator(
         outputPcmPath: String,
         channels: Int,
         sampleRate: Int
-    ): Unit = withContext(Dispatchers.Default) {
+    ): Unit {
         require(channels == CHANNELS) { "当前模型需要 2 声道" }
         require(sampleRate == SAMPLE_RATE) { "当前模型需要 44100Hz" }
 
-        val inputFile = RandomAccessFile(inputPcmPath, "r")
-        val outputFile = RandomAccessFile(outputPcmPath, "rw")
-        try {
-            val totalFrames = (inputFile.length() / 4 / CHANNELS).toLong()
-            if (totalFrames <= 0) return@withContext
+        // x86 模拟器上 ORT 加载 fp16 大模型会永久阻塞（Session 创建线程冻结，CPU 零增长），
+        // 无法在模拟器完成推理；直接抛出明确错误，由上层提示用户在真机上使用。
+        // 注意：guard 必须在触碰任何 ORT 类（含 OrtEnvironment）之前执行，
+        // 否则 ORT 原生库加载本身就会卡死线程。
+        if (isLowMemoryDevice && isEmulator) {
+            Log.w(TAG, "emulator detected, skipping ONNX separation")
+            throw UnsupportedOperationException(
+                "模拟器无法运行本地人声分离（ONNX 推理在 x86 模拟器上不可用），请在真机上使用"
+            )
+        }
+
+        return withContext(Dispatchers.Default) {
+            val inputFile = RandomAccessFile(inputPcmPath, "r")
+            val outputFile = RandomAccessFile(outputPcmPath, "rw")
+            try {
+                val totalFrames = (inputFile.length() / 4 / CHANNELS).toLong()
+                if (totalFrames <= 0) return@withContext
 
             // 输出文件先补齐到与输入等长（后续按帧覆盖）
             outputFile.setLength(totalFrames * CHANNELS * 4L)
@@ -178,6 +196,7 @@ class OnnxDemucsSeparator(
         } finally {
             runCatching { inputFile.close() }
             runCatching { outputFile.close() }
+        }
         }
     }
 
