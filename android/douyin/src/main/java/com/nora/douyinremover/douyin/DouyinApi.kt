@@ -279,15 +279,16 @@ class DouyinApi(
 
     private fun mapAwemeItem(item: AwemeItem): List<ResolvedMediaItem> {
         val result = mutableListOf<ResolvedMediaItem>()
+        // 每个码率取第一个 URL（url_list 其余是同内容的 CDN 镜像，展开会造成重复结果）
         item.video?.bitRate?.forEach { bitRate ->
-            bitRate.playAddr.urlList.forEachIndexed { index, url ->
+            bitRate.playAddr.urlList.firstOrNull()?.let { url ->
                 result += ResolvedMediaItem(
                     title = item.desc,
                     url = normalizeUrl(url),
                     width = bitRate.playAddr.width,
                     height = bitRate.playAddr.height,
                     isWatermarkFree = bitRate.downloadAddr != null,
-                    qualityLabel = "${bitRate.playAddr.width}x${bitRate.playAddr.height} #${index + 1}"
+                    qualityLabel = "${bitRate.playAddr.width}x${bitRate.playAddr.height}"
                 )
             }
         }
