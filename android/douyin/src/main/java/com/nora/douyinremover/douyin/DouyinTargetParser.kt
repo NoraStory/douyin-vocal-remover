@@ -7,12 +7,16 @@ class DouyinTargetParser {
         val value = input.trim()
         if (value.isEmpty()) return null
 
-        if (value.matches(Regex("^[0-9]+$"))) {
-            return ParsedDouyinTarget(DouyinTargetType.VIDEO, value)
+        // 分享文本常带前后缀（如「文案 https://v.douyin.com/xxxx/ 复制此链接」），
+        // 先从中提取出真正的链接再解析，避免直接 URL() 抛异常而误判为 USER 类型。
+        val link = extractUrl(value) ?: value
+
+        if (link.matches(Regex("^[0-9]+$"))) {
+            return ParsedDouyinTarget(DouyinTargetType.VIDEO, link)
         }
 
-        val url = runCatching { URL(value) }.getOrNull()
-            ?: return ParsedDouyinTarget(DouyinTargetType.USER, value)
+        val url = runCatching { URL(link) }.getOrNull()
+            ?: return ParsedDouyinTarget(DouyinTargetType.USER, link)
         val host = url.host.orEmpty()
         val path = url.path.orEmpty()
 
@@ -34,10 +38,16 @@ class DouyinTargetParser {
                 return ParsedDouyinTarget(DouyinTargetType.USER, it.groupValues[1])
             }
             if (host == "v.douyin.com") {
-                return ParsedDouyinTarget(DouyinTargetType.VIDEO, value)
+                return ParsedDouyinTarget(DouyinTargetType.VIDEO, link)
             }
         }
 
         return null
+    }
+
+    private fun extractUrl(text: String): String? {
+        val match = Regex("https?://[^\\s]+").find(text) ?: return null
+        // 去掉链接末尾可能粘连的中英文标点/符号
+        return match.value.trimEnd { it in ".,;:)》】」'\"!?。，；：！？" }
     }
 }

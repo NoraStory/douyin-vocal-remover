@@ -14,8 +14,10 @@ dependencyResolutionManagement {
     repositories {
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
-        google()
+        // ffmpegkit-maintained 坐标在阿里云镜像同步不全（有 POM 无 AAR），
+        // 需直连 Maven Central 才能取到 AAR。
         mavenCentral()
+        google()
     }
 }
 

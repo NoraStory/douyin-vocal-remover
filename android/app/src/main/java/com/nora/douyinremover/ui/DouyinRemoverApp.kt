@@ -1,10 +1,22 @@
 package com.nora.douyinremover.ui
 
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -27,16 +39,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Clear
-import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.MusicNote
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -45,12 +60,12 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -60,17 +75,21 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,6 +97,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
+import kotlinx.coroutines.launch
 
 @Composable
 fun DouyinRemoverApp(viewModel: AppViewModel) {
@@ -109,6 +129,7 @@ private fun DouyinRemoverContent(
     var showOptions by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -121,7 +142,7 @@ private fun DouyinRemoverContent(
                 .background(
                     Brush.verticalGradient(
                         0f to MaterialTheme.colorScheme.background,
-                        0.5f to MaterialTheme.colorScheme.surface,
+                        0.3f to MaterialTheme.colorScheme.surface,
                         1f to MaterialTheme.colorScheme.background
                     )
                 )
@@ -129,7 +150,7 @@ private fun DouyinRemoverContent(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 40.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item {
@@ -144,16 +165,36 @@ private fun DouyinRemoverContent(
                         input = uiState.input,
                         onInputChange = onInputChange,
                         onResolve = onResolve,
-                        isResolving = uiState.isResolving
+                        isResolving = uiState.isResolving,
+                        onPaste = {
+                            scope.launch {
+                                val clipboard = it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.primaryClip?.getItemAt(0)?.text?.let { text ->
+                                    onInputChange(text.toString())
+                                }
+                            }
+                        }
                     )
                 }
 
                 uiState.error?.let { error ->
-                    item { ErrorBanner(error) }
+                    item {
+                        AnimatedVisibility(visible = true, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+                            ErrorBanner(error)
+                        }
+                    }
+                }
+
+                if (uiState.resolvedItems.isEmpty() && !uiState.isResolving && uiState.error == null) {
+                    item {
+                        EmptyStateHint()
+                    }
                 }
 
                 if (uiState.resolvedItems.isNotEmpty()) {
-                    item { SectionLabel("解析结果 (${uiState.resolvedItems.size})") }
+                    item {
+                        SectionLabel("解析结果", uiState.resolvedItems.size)
+                    }
 
                     items(uiState.resolvedItems) { item ->
                         ResolvedItemCard(
@@ -178,7 +219,9 @@ private fun DouyinRemoverContent(
                 }
 
                 uiState.outputPath?.let { path ->
-                    item { SuccessCard(path) }
+                    item {
+                        SuccessCard(path)
+                    }
                 }
             }
         }
@@ -189,7 +232,8 @@ private fun DouyinRemoverContent(
             onDismissRequest = { showOptions = false },
             sheetState = sheetState,
             containerColor = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
+            tonalElevation = 6.dp,
+            dragHandle = null
         ) {
             OptionsSheetContent(
                 settings = settings,
@@ -227,27 +271,24 @@ private fun HeaderSection(onOpenOptions: () -> Unit, formatLabel: String) {
             modifier = Modifier.size(44.dp)
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Icon(
-                    Icons.Outlined.Tune,
-                    contentDescription = "处理选项",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
-                )
+                Icon(Icons.Outlined.Settings, contentDescription = "处理选项", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
             }
         }
     }
-    Spacer(Modifier.height(2.dp))
-    AssistChip(
-        onClick = onOpenOptions,
-        label = { Text(formatLabel, style = MaterialTheme.typography.labelMedium) },
-        leadingIcon = { Icon(Icons.Outlined.HighQuality, contentDescription = null, modifier = Modifier.size(16.dp)) },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-        ),
-        border = null
-    )
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AssistChip(
+            onClick = onOpenOptions,
+            label = { Text(formatLabel, style = MaterialTheme.typography.labelMedium) },
+            leadingIcon = { Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ),
+            border = null
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -256,15 +297,17 @@ private fun InputSection(
     input: String,
     onInputChange: (String) -> Unit,
     onResolve: () -> Unit,
-    isResolving: Boolean
+    isResolving: Boolean,
+    onPaste: (Context) -> Unit
 ) {
+    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(
             value = input,
             onValueChange = onInputChange,
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = {
-                Icon(Icons.Outlined.ContentPaste, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Outlined.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             },
             trailingIcon = {
                 if (input.isNotBlank()) {
@@ -282,28 +325,47 @@ private fun InputSection(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
                 unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
                 focusedContainerColor = MaterialTheme.colorScheme.surface,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                 cursorColor = MaterialTheme.colorScheme.primary
             )
         )
 
-        Button(
-            onClick = onResolve,
-            enabled = !isResolving,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = MaterialTheme.shapes.large,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (isResolving) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-            } else {
-                Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(20.dp))
+            FilledTonalButton(
+                onClick = { onPaste(context) },
+                modifier = Modifier.weight(1f).height(48.dp),
+                shape = MaterialTheme.shapes.large,
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            ) {
+                Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text("粘贴", style = MaterialTheme.typography.labelLarge)
             }
-            Spacer(Modifier.size(8.dp))
-            Text(if (isResolving) "解析中..." else "解析", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+            Button(
+                onClick = onResolve,
+                enabled = !isResolving,
+                modifier = Modifier.weight(2f).height(48.dp),
+                shape = MaterialTheme.shapes.large,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                if (isResolving) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                } else {
+                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.size(6.dp))
+                Text(if (isResolving) "解析中..." else "解析", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
@@ -314,27 +376,66 @@ private fun ErrorBanner(error: String) {
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.errorContainer,
         tonalElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().animateContentSize()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(Icons.Outlined.Clear, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(18.dp))
+            Icon(Icons.Outlined.Clear, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(20.dp))
             Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
         }
     }
 }
 
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-        fontWeight = FontWeight.SemiBold
-    )
+private fun EmptyStateHint() {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.size(36.dp)
+            )
+        }
+        Text(
+            "输入抖音链接开始使用",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            "支持视频链接、分享口令、用户主页和纯 ID",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        )
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String, count: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold)
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+            Text(
+                "$count",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -401,7 +502,7 @@ private fun ResolvedItemCard(
                     modifier = Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("✓", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -440,7 +541,7 @@ private fun ProcessButton(
             Spacer(Modifier.size(10.dp))
             Text("处理中...", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         } else {
-            Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(22.dp))
+            Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(22.dp))
             Spacer(Modifier.size(10.dp))
             Text("下载并去人声", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
@@ -449,7 +550,7 @@ private fun ProcessButton(
 
 @Composable
 private fun ProcessingCard(progressText: String) {
-    ElevatedCard(shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+    ElevatedCard(shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().animateContentSize()) {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
@@ -474,10 +575,12 @@ private fun SuccessCard(path: String) {
     ) {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
-                Text("处理完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(28.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("处理完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text(fileName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
-            Text(fileName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -492,11 +595,19 @@ private fun OptionsSheetContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 16.dp)
+            .padding(horizontal = 24.dp, vertical = 20.dp)
             .windowInsetsPadding(WindowInsets.navigationBars),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("处理选项", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Outlined.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+            }
+            Text("处理选项", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
 
         Text("输出格式", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutputFormatSelector(
@@ -510,14 +621,17 @@ private fun OptionsSheetContent(
         SettingRow("保留处理记录", "在 App 内查看历史", settings.keepHistory) {
             onUpdateSettings(settings.copy(keepHistory = it))
         }
-        SettingRow("静音裁剪", "自动去掉尾部的静音段", settings.silenceThresholdDb < 0f) { value ->
+        SettingRow("静音裁剪", "自动去掉尾部静音段", settings.silenceThresholdDb < 0f) { value ->
             onUpdateSettings(settings.copy(silenceThresholdDb = if (value) -55f else 0f))
         }
 
-        OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
-            Text("完成")
+        Button(
+            onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = MaterialTheme.shapes.large
+        ) {
+            Text("完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(8.dp))
     }
 }
 

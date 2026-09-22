@@ -8,7 +8,7 @@ composeBom = "2026.09.00"
 serializationJson = "1.11.0"
 datastore = "1.2.1"
 onnxruntime = "1.30.0"
-ffmpegKit = "6.0.LTS"
+ffmpegKit = "8.1.8"
 okhttp = "5.5.0"
 coroutines = "1.11.0"
 junit = "4.13.2"
@@ -30,7 +30,7 @@ compose-material-icons-extended = { group = "androidx.compose.material", name = 
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
-ffmpeg-kit-audio = { group = "com.arthenica", name = "ffmpeg-kit-audio", version.ref = "ffmpegKit" }
+ffmpeg-kit-audio = { group = "dev.ffmpegkit-maintained", name = "ffmpeg-kit-audio", version.ref = "ffmpegKit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestJunit" }

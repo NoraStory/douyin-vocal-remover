@@ -15,7 +15,8 @@ interface MediaEncoder {
     suspend fun trimSilence(
         inputPath: String,
         outputPath: String,
-        thresholdDb: Float
+        thresholdDb: Float,
+        bitrateKbps: Int
     ): Unit
 }
 

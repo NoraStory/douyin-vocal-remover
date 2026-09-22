@@ -24,12 +24,31 @@ class DouyinApi(
     private val cookieStore = DouyinCookieStore(context)
 
     suspend fun resolve(input: String): List<ResolvedMediaItem> = withContext(Dispatchers.IO) {
-        val target = DouyinTargetParser().parse(input) ?: return@withContext emptyList()
+        // 首次请求前确保已注册 ttwid，否则抖音接口容易被风控拦截
+        ensureTtwid()
+
+        // 解析分享文本/链接；短链（v.douyin.com）会被解析成 VIDEO + 原始短链 URL
+        var target = DouyinTargetParser().parse(input) ?: return@withContext emptyList()
+
+        // 短链场景：target.id 是 v.douyin.com 短链（非纯数字），需先跟随重定向拿到真实页面地址
+        if (target.type == DouyinTargetType.VIDEO && !target.id.matches(Regex("^[0-9]+$"))) {
+            val redirectedUrl = followRedirect(target.id)
+            target = DouyinTargetParser().parse(redirectedUrl)
+                ?: throw IOException("短链解析失败")
+        }
+
         val cookie = cookieStore.load()
         when (target.type) {
             DouyinTargetType.VIDEO,
             DouyinTargetType.NOTE -> resolveDetail(target, cookie)
             DouyinTargetType.USER -> resolveUser(target, cookie)
+        }
+    }
+
+    private suspend fun ensureTtwid() {
+        val cookie = cookieStore.load()
+        if (!cookie.contains("ttwid=", ignoreCase = true)) {
+            registerTtwid()
         }
     }
 
@@ -63,9 +82,27 @@ class DouyinApi(
             .header("User-Agent", USER_AGENT_2)
             .build()
         client.newCall(request).execute().use { response ->
-            response.header("Location")
+            val location = response.header("Location")
                 ?: extractRedirectFromHtml(response.body?.string().orEmpty())
-                ?: url
+                ?: throw IOException("短链解析失败")
+            resolveRedirectLocation(url, location)
+        }
+    }
+
+    private fun resolveRedirectLocation(baseUrl: String, location: String): String {
+        return when {
+            location.startsWith("http://") || location.startsWith("https://") -> location
+            location.startsWith("//") -> "https:$location"
+            location.startsWith("/") -> {
+                val origin = runCatching { URL(baseUrl) }.getOrNull()
+                    ?.let { "${it.protocol}://${it.host}" } ?: "https://v.douyin.com"
+                "$origin$location"
+            }
+            else -> {
+                val origin = runCatching { URL(baseUrl) }.getOrNull()
+                    ?.let { "${it.protocol}://${it.host}" } ?: "https://v.douyin.com"
+                "$origin/$location"
+            }
         }
     }
 
@@ -151,9 +188,15 @@ class DouyinApi(
         return json.decodeFromString(body)
     }
 
-    private fun extractRedirectFromHtml(html: String): String? =
-        Regex("<a href=\"(https?://www\\.iesdouyin\\.com/[^\"]+)\"").find(html)
-            ?.groupValues?.get(1)
+    private fun extractRedirectFromHtml(html: String): String? {
+        // <a href="https://www.iesdouyin.com/...">
+        Regex("<a href=\"(https?://[^\"]+)\"").find(html)
+            ?.groupValues?.get(1)?.let { return it }
+        // <meta http-equiv="refresh" content="0;url=https://...">
+        Regex("(?i)content=\"\\d+\\s*;\\s*url=([^\"'>]+)\"").find(html)
+            ?.groupValues?.get(1)?.trim('\'', '"')?.let { return it }
+        return null
+    }
 
     private fun normalizeUrl(url: String): String =
         when {

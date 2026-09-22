@@ -30,7 +30,7 @@ class AudioProcessor(
         )
 
         if (request.silenceThresholdDb < 0f) {
-            encoder.trimSilence(encodedPath, request.outputPath, request.silenceThresholdDb)
+            encoder.trimSilence(encodedPath, request.outputPath, request.silenceThresholdDb, request.bitrateKbps)
         } else {
             File(encodedPath).copyTo(File(request.outputPath), overwrite = true)
         }

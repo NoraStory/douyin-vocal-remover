@@ -20,6 +20,14 @@ android/local.properties
 .idea/
 *.iml
 .vscode/
+# Temp/debug artifacts
+.workbuddy/
+tools/_*.txt
+*_test.txt
+*_check.txt
+build_signature_html.ps1
+check_signature_html.ps1
+model-export/_export_log.txt
 
 # Model binary is managed by Git LFS
 android/app/src/main/assets/models/*.onnx
