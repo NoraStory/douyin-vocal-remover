@@ -11,15 +11,15 @@ android {
     defaultConfig {
         minSdk = 26
 
-        // Gitee 镜像仓库坐标与私人令牌：从根目录 local.properties 读取（gitignore 已覆盖），
-        // 未配置时为空串，更新检测自动跳过 Gitee 直接走 GitHub。
+        // Gitee 镜像仓库坐标：从根目录 local.properties 读取（gitignore 已覆盖）。
+        // 令牌绝不写入 BuildConfig（会被反编译提取）——公开仓库的 Release
+        // 检测与附件下载均匿名可用，令牌仅发布脚本经环境变量使用。
         val localProps = Properties().apply {
             val f = rootProject.file("local.properties")
             if (f.exists()) f.inputStream().use { load(it) }
         }
         buildConfigField("String", "GITEE_OWNER", "\"${localProps.getProperty("gitee.owner", "")}\"")
         buildConfigField("String", "GITEE_REPO", "\"${localProps.getProperty("gitee.repo", "")}\"")
-        buildConfigField("String", "GITEE_TOKEN", "\"${localProps.getProperty("gitee.token", "")}\"")
         buildConfigField("String", "GITHUB_OWNER", "\"NoraStory\"")
         buildConfigField("String", "GITHUB_REPO", "\"douyin-vocal-remover\"")
     }

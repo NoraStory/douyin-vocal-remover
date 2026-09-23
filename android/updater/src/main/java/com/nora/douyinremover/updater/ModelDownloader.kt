@@ -16,9 +16,7 @@ import java.security.MessageDigest
  * - SHA-256 校验（校验和由 release 的 sha256 清单提供，可选）
  * - 下载到 filesDir/models/<name>.tmp，校验通过后原子 rename
  */
-class ModelDownloader(
-    private val giteeToken: String = BuildConfig.GITEE_TOKEN
-) {
+class ModelDownloader {
     /**
      * 下载模型到 modelsDir。
      * @param asset 模型资产（文件名/URL/大小）
@@ -125,14 +123,8 @@ class ModelDownloader(
         conn.disconnect()
     }
 
-    /** Gitee 附件直链可能需要 token 参数；GitHub release 资产直链匿名可下 */
-    private fun buildUrl(url: String): String {
-        if (url.contains("gitee.com") && giteeToken.isNotBlank() && !url.contains("access_token=")) {
-            val sep = if ("?" in url) "&" else "?"
-            return "$url${sep}access_token=$giteeToken"
-        }
-        return url
-    }
+    /** 公开仓库的附件直链匿名可下，无需令牌（令牌编译进 APK 会被反编译提取） */
+    private fun buildUrl(url: String): String = url
 
     private fun sha256Of(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

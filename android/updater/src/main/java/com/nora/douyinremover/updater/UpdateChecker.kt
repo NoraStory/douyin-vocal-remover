@@ -64,12 +64,9 @@ class UpdateChecker(
     private fun giteeConfigured(): Boolean =
         BuildConfig.GITEE_OWNER.isNotBlank() && BuildConfig.GITEE_REPO.isNotBlank()
 
-    private fun giteeLatestUrl(): String {
-        val base = "https://gitee.com/api/v5/repos/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}/releases/latest"
-        return if (BuildConfig.GITEE_TOKEN.isNotBlank()) {
-            "$base?access_token=${BuildConfig.GITEE_TOKEN}"
-        } else base
-    }
+    private fun giteeLatestUrl(): String =
+        // 公开仓库匿名可读，不带令牌（令牌编译进 APK 会被反编译提取）
+        "https://gitee.com/api/v5/repos/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}/releases/latest"
 
     private fun checkGitee(): UpdateInfo? {
         if (!giteeConfigured()) return null

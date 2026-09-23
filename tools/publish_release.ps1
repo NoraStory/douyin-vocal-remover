@@ -3,7 +3,8 @@
 # 前置：
 #   - gh CLI 已登录 GitHub
 #   - Gitee 同步需要环境变量 GITEE_TOKEN（私人令牌，scope: projects）
-#   - local.properties 中 gitee.owner / gitee.repo / gitee.token 供 App 内检测使用
+#   - local.properties 中 gitee.owner / gitee.repo（App 内匿名检测用，不含令牌；
+#     令牌绝不写入 App——公开仓库的 Release 检测与附件下载均匿名可用）
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$NotesFile = ""
