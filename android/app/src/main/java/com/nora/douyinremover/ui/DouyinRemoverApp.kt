@@ -51,6 +51,7 @@ import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Login
 import androidx.compose.material.icons.outlined.MusicNote
@@ -66,6 +67,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -147,9 +149,23 @@ fun DouyinRemoverApp(viewModel: AppViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
 
+    // 开屏使用说明：首次启动（或用户未勾选"下次不再显示"）时弹出；
+    // 页头问号可随时重新打开。
+    var showGuide by rememberSaveable { mutableStateOf(true) }
+    LaunchedEffect(settings.showGuideOnLaunch) {
+        showGuide = settings.showGuideOnLaunch
+    }
+
     DouyinRemoverContent(
         uiState = uiState,
         settings = settings,
+        showGuide = showGuide,
+        onDismissGuide = { dontShowAgain ->
+            showGuide = false
+            if (dontShowAgain) {
+                viewModel.updateSettings(settings.copy(showGuideOnLaunch = false))
+            }
+        },
         onInputChange = viewModel::updateInput,
         onResolve = viewModel::resolve,
         onSelectItem = viewModel::selectItem,
@@ -167,6 +183,8 @@ fun DouyinRemoverApp(viewModel: AppViewModel) {
 private fun DouyinRemoverContent(
     uiState: AppUiState,
     settings: ProcessingSettings,
+    showGuide: Boolean,
+    onDismissGuide: (Boolean) -> Unit,
     onInputChange: (String) -> Unit,
     onResolve: () -> Unit,
     onSelectItem: (ResolvedMediaItem) -> Unit,
@@ -178,6 +196,7 @@ private fun DouyinRemoverContent(
     onVerificationCancelled: () -> Unit
 ) {
     var showOptions by remember { mutableStateOf(false) }
+    var showGuideDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -204,6 +223,7 @@ private fun DouyinRemoverContent(
                 HeaderSection(
                     onOpenOptions = { showOptions = true },
                     onOpenLogin = onOpenLogin,
+                    onOpenGuide = { showGuideDialog = true },
                     onCopyLogs = {
                         scope.launch {
                             copyLogsToClipboard(appContext)
@@ -345,6 +365,14 @@ private fun DouyinRemoverContent(
             onDismiss = onVerificationCancelled
         )
     }
+
+    // 开屏使用说明（首次启动自动弹出；页头问号可重新打开）
+    if (showGuide) {
+        GuideDialog(onDismiss = onDismissGuide)
+    }
+    if (showGuideDialog) {
+        GuideDialog(onDismiss = { showGuideDialog = false })
+    }
 }
 
 /**
@@ -354,6 +382,7 @@ private fun DouyinRemoverContent(
 private fun HeaderSection(
     onOpenOptions: () -> Unit,
     onOpenLogin: () -> Unit,
+    onOpenGuide: () -> Unit,
     onCopyLogs: () -> Unit,
     isLoggedIn: Boolean,
     formatLabel: String
@@ -362,8 +391,24 @@ private fun HeaderSection(
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
         ) {
+            // 使用说明入口（左上角问号）
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                onClick = onOpenGuide,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        Icons.Outlined.HelpOutline,
+                        contentDescription = "使用说明",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "抖音去人声",
@@ -1555,6 +1600,205 @@ private fun VerificationDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 开屏使用说明：使用步骤 + 支持格式介绍 + 三种搜索模式说明。
+ * 首次启动自动弹出；勾选"下次不再显示"后不再自动弹出（页头问号仍可打开）。
+ */
+@Composable
+private fun GuideDialog(onDismiss: (dontShowAgain: Boolean) -> Unit) {
+    var dontShowAgain by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = { onDismiss(dontShowAgain) },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 标题
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+                ) {
+                    Icon(
+                        Icons.Outlined.HelpOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        "使用说明",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // 使用步骤
+                GuideSectionTitle("使用步骤")
+                GuideStep("1", "粘贴链接", "从抖音分享口令复制，或直接粘贴视频链接 / ID")
+                GuideStep("2", "点击解析", "选择想要的清晰度（默认选第一个）")
+                GuideStep("3", "下载或去人声", "「下载」保存原视频；「去除人声」本地 AI 分离出伴奏")
+
+                // 支持的格式
+                GuideSectionTitle("支持的音频格式")
+                GuideFormatRow("MP3 320k", "音质最好的有损格式，兼容一切设备，日常听歌首选")
+                GuideFormatRow("MP3 256k / 128k", "体积更小，适合流量敏感或批量下载")
+                GuideFormatRow("WAV", "无损原始波形，体积大，适合二次剪辑加工")
+                GuideFormatRow("FLAC", "无损压缩，体积约为 WAV 的一半，发烧友首选")
+
+                // 三种搜索模式
+                GuideSectionTitle("三种搜索模式")
+                GuideModeRow("分享链接", "粘贴「复制打开抖音…」整段口令或 v.douyin.com 短链，最常用")
+                GuideModeRow("视频 ID", "输入纯数字视频 ID（链接末尾那串数字），适合已知 ID 时精确定位")
+                GuideModeRow("用户主页", "粘贴作者主页链接，列出该用户的视频供挑选下载")
+
+                // 底部：不再显示 + 知道了
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(MaterialTheme.shapes.small)
+                            .combinedClickable(onClick = { dontShowAgain = !dontShowAgain })
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Checkbox(
+                            checked = dontShowAgain,
+                            onCheckedChange = { dontShowAgain = it }
+                        )
+                        Text(
+                            "下次打开不再显示",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = { onDismiss(dontShowAgain) },
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text("知道了", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuideSectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary
+    )
+}
+
+@Composable
+private fun GuideStep(number: String, title: String, detail: String) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.size(20.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    number,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+        Column {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun GuideFormatRow(name: String, detail: String) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.width(86.dp)
+        ) {
+            Text(
+                name,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+            )
+        }
+        Text(
+            detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun GuideModeRow(name: String, detail: String) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+    ) {
+        Text(
+            "·",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Column {
+            Text(
+                name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

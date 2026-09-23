@@ -21,5 +21,7 @@ data class ProcessingSettings(
     val inferenceBackend: InferenceBackend = InferenceBackend.AUTO,
     val silenceThresholdDb: Float = -55f,
     val outputDirectoryUri: String? = null,
-    val proxyUrl: String? = null
+    val proxyUrl: String? = null,
+    /** 开屏使用说明：用户勾选"下次不再显示"后为 false（页头问号仍可重新打开） */
+    val showGuideOnLaunch: Boolean = true
 )

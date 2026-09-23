@@ -21,6 +21,7 @@ class SettingsRepository(private val context: Context) {
         val silenceThreshold = floatPreferencesKey("silence_threshold")
         val outputDirectory = stringPreferencesKey("output_directory")
         val proxyUrl = stringPreferencesKey("proxy_url")
+        val showGuideOnLaunch = booleanPreferencesKey("show_guide_on_launch")
     }
 
     val settings: Flow<ProcessingSettings> = context.appDataStore.data.map { values ->
@@ -35,7 +36,8 @@ class SettingsRepository(private val context: Context) {
                 ?: InferenceBackend.AUTO,
             silenceThresholdDb = values[Keys.silenceThreshold] ?: -55f,
             outputDirectoryUri = values[Keys.outputDirectory],
-            proxyUrl = values[Keys.proxyUrl]
+            proxyUrl = values[Keys.proxyUrl],
+            showGuideOnLaunch = values[Keys.showGuideOnLaunch] ?: true
         )
     }
 
@@ -50,6 +52,7 @@ class SettingsRepository(private val context: Context) {
             values[Keys.silenceThreshold] = updated.silenceThresholdDb
             values[Keys.outputDirectory] = updated.outputDirectoryUri ?: ""
             values[Keys.proxyUrl] = updated.proxyUrl ?: ""
+            values[Keys.showGuideOnLaunch] = updated.showGuideOnLaunch
         }
     }
 
@@ -66,7 +69,8 @@ class SettingsRepository(private val context: Context) {
                     ?: InferenceBackend.AUTO,
                 silenceThresholdDb = values[Keys.silenceThreshold] ?: -55f,
                 outputDirectoryUri = values[Keys.outputDirectory],
-                proxyUrl = values[Keys.proxyUrl]
+                proxyUrl = values[Keys.proxyUrl],
+                showGuideOnLaunch = values[Keys.showGuideOnLaunch] ?: true
             )
         }.first()
     }
