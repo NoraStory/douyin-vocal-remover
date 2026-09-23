@@ -2,7 +2,6 @@ package com.nora.douyinremover.ui
 
 import android.content.ClipboardManager
 import android.content.Context
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
@@ -11,17 +10,11 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -36,7 +29,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -85,7 +77,6 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -99,20 +90,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
 import kotlinx.coroutines.launch
+
+/**
+ * 排版间距体系（4pt 网格）：
+ * - 页面水平边距 20dp，区块间距 16dp
+ * - 卡片内边距 16dp，卡片内元素间距 12dp
+ * - 图标与文字间距 10dp，相关元素 8dp
+ */
+private object Spacing {
+    val screenH = 20.dp      // 页面水平边距
+    val sectionV = 16.dp     // 区块间距
+    val cardP = 16.dp        // 卡片内边距
+    val cardGap = 12.dp      // 卡片内元素间距
+    val itemGap = 10.dp      // 图标-文字间距
+    val tightGap = 8.dp      // 相关元素间距
+}
 
 /** 搜索方式：与 DouyinTargetParser 的三种输入形态一一对应 */
 enum class SearchMode(val label: String, val hint: String, val icon: ImageVector) {
@@ -157,86 +160,94 @@ private fun DouyinRemoverContent(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.statusBars
     ) { innerPadding ->
-        Box(
+        LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(innerPadding),
+            contentPadding = PaddingValues(
+                start = Spacing.screenH,
+                end = Spacing.screenH,
+                top = 12.dp,
+                bottom = 48.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sectionV)
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                item {
-                    HeaderSection(
-                        onOpenOptions = { showOptions = true },
-                        formatLabel = settings.outputFormat.label()
-                    )
-                }
+            item {
+                HeaderSection(
+                    onOpenOptions = { showOptions = true },
+                    formatLabel = settings.outputFormat.label()
+                )
+            }
 
-                item {
-                    InputSection(
-                        input = uiState.input,
-                        onInputChange = onInputChange,
-                        onResolve = onResolve,
-                        isResolving = uiState.isResolving,
-                        onPaste = {
-                            scope.launch {
-                                val clipboard = it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.primaryClip?.getItemAt(0)?.text?.let { text ->
-                                    onInputChange(text.toString())
-                                }
+            item {
+                InputSection(
+                    input = uiState.input,
+                    onInputChange = onInputChange,
+                    onResolve = onResolve,
+                    isResolving = uiState.isResolving,
+                    onPaste = {
+                        scope.launch {
+                            val clipboard = it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.primaryClip?.getItemAt(0)?.text?.let { text ->
+                                onInputChange(text.toString())
                             }
                         }
+                    }
+                )
+            }
+
+            uiState.error?.let { error ->
+                item(key = "error") {
+                    AnimatedVisibility(
+                        visible = true,
+                        enter = fadeIn() + scaleIn(initialScale = 0.92f),
+                        exit = fadeOut() + scaleOut(targetScale = 0.92f)
+                    ) {
+                        ErrorBanner(error)
+                    }
+                }
+            }
+
+            if (uiState.resolvedItems.isEmpty() && !uiState.isResolving && uiState.error == null) {
+                item(key = "empty") {
+                    EmptyStateHint()
+                }
+            }
+
+            if (uiState.resolvedItems.isNotEmpty()) {
+                item(key = "section") {
+                    SectionLabel("解析结果", uiState.resolvedItems.size)
+                }
+
+                items(
+                    uiState.resolvedItems,
+                    key = { "${it.url}-${it.qualityLabel}" }
+                ) { item ->
+                    ResolvedItemCard(
+                        item = item,
+                        selected = item == uiState.selectedItem,
+                        onClick = { onSelectItem(item) }
                     )
                 }
 
-                uiState.error?.let { error ->
-                    item {
-                        AnimatedVisibility(visible = true, enter = fadeIn() + scaleIn(initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.9f)) {
-                            ErrorBanner(error)
-                        }
-                    }
+                item(key = "process") {
+                    Spacer(Modifier.height(4.dp))
+                    ProcessButton(
+                        onClick = onProcess,
+                        enabled = uiState.selectedItem != null && !uiState.isProcessing,
+                        isProcessing = uiState.isProcessing
+                    )
                 }
+            }
 
-                if (uiState.resolvedItems.isEmpty() && !uiState.isResolving && uiState.error == null) {
-                    item {
-                        EmptyStateHint()
-                    }
-                }
+            if (uiState.isProcessing) {
+                item(key = "processing") { ProcessingCard(uiState.progressText) }
+            }
 
-                if (uiState.resolvedItems.isNotEmpty()) {
-                    item {
-                        SectionLabel("解析结果", uiState.resolvedItems.size)
-                    }
-
-                    items(uiState.resolvedItems) { item ->
-                        ResolvedItemCard(
-                            item = item,
-                            selected = item == uiState.selectedItem,
-                            onClick = { onSelectItem(item) }
-                        )
-                    }
-
-                    item {
-                        Spacer(Modifier.height(4.dp))
-                        ProcessButton(
-                            onClick = onProcess,
-                            enabled = uiState.selectedItem != null && !uiState.isProcessing,
-                            isProcessing = uiState.isProcessing
-                        )
-                    }
-                }
-
-                if (uiState.isProcessing) {
-                    item { ProcessingCard(uiState.progressText) }
-                }
-
-                uiState.outputPath?.let { path ->
-                    item {
-                        SuccessCard(path)
-                    }
+            uiState.outputPath?.let { path ->
+                item(key = "success") {
+                    SuccessCard(path)
                 }
             }
         }
@@ -259,56 +270,68 @@ private fun DouyinRemoverContent(
     }
 }
 
+/**
+ * 页头：标题 + 副标题左对齐，设置按钮右上角；格式 Chip 与标题基线对齐。
+ */
 @Composable
 private fun HeaderSection(onOpenOptions: () -> Unit, formatLabel: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "抖音去人声",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = "下载视频 · 本地分离人声 · 导出音乐",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            onClick = onOpenOptions,
-            modifier = Modifier.size(44.dp)
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Icon(Icons.Outlined.Settings, contentDescription = "处理选项", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "抖音去人声",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "下载视频 · 本地分离人声 · 导出音乐",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                onClick = onOpenOptions,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        Icons.Outlined.Settings,
+                        contentDescription = "处理选项",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
         }
-    }
-    Spacer(Modifier.height(6.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        AssistChip(
-            onClick = onOpenOptions,
-            label = { Text(formatLabel, style = MaterialTheme.typography.labelMedium) },
-            leadingIcon = { Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp)) },
-            colors = AssistChipDefaults.assistChipColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-            ),
-            border = null
-        )
+        Spacer(Modifier.height(Spacing.tightGap))
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)) {
+            AssistChip(
+                onClick = onOpenOptions,
+                label = { Text(formatLabel, style = MaterialTheme.typography.labelMedium) },
+                leadingIcon = {
+                    Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                border = null
+            )
+        }
     }
 }
 
 /**
- * 搜索输入区：顶部下拉栏切换三种搜索方式（分享链接 / 视频 ID / 用户主页），
- * 切换时占位文案与图标联动，输入内容保留。
+ * 搜索输入卡片：搜索方式下拉栏 → 输入框 → 操作按钮，垂直节奏 12dp。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -328,15 +351,20 @@ private fun InputSection(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
         shadowElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth().animateContentSize(
-            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
-        )
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(Spacing.cardP),
+            verticalArrangement = Arrangement.spacedBy(Spacing.cardGap)
         ) {
-            // 搜索方式下拉栏
+            // ── 搜索方式下拉栏 ──
             ExposedDropdownMenuBox(
                 expanded = dropdownExpanded,
                 onExpandedChange = { dropdownExpanded = it }
@@ -347,12 +375,11 @@ private fun InputSection(
                     modifier = Modifier
                         .menuAnchor()
                         .fillMaxWidth()
-                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
                     ) {
                         Icon(
                             searchMode.icon,
@@ -379,18 +406,26 @@ private fun InputSection(
                     SearchMode.entries.forEach { mode ->
                         DropdownMenuItem(
                             text = {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+                                ) {
                                     Icon(
                                         mode.icon,
                                         contentDescription = null,
-                                        tint = if (mode == searchMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        tint = if (mode == searchMode) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(18.dp)
                                     )
-                                    Column {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
                                         Text(
                                             mode.label,
                                             style = MaterialTheme.typography.labelLarge,
-                                            color = if (mode == searchMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                            color = if (mode == searchMode) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
                                             mode.hint,
@@ -399,7 +434,12 @@ private fun InputSection(
                                         )
                                     }
                                     if (mode == searchMode) {
-                                        Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                     }
                                 }
                             },
@@ -412,18 +452,26 @@ private fun InputSection(
                 }
             }
 
-            // 输入框：占位随搜索方式切换
+            // ── 输入框：占位随搜索方式切换 ──
             OutlinedTextField(
                 value = input,
                 onValueChange = onInputChange,
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = {
-                    Icon(searchMode.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(
+                        searchMode.icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 },
                 trailingIcon = {
                     if (input.isNotBlank()) {
                         IconButton(onClick = { onInputChange("") }) {
-                            Icon(Icons.Outlined.Clear, contentDescription = "清空", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                Icons.Outlined.Clear,
+                                contentDescription = "清空",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 },
@@ -448,9 +496,10 @@ private fun InputSection(
                 )
             )
 
+            // ── 操作按钮：粘贴 1/3 + 解析 2/3 ──
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
             ) {
                 FilledTonalButton(
                     onClick = { onPaste(context) },
@@ -462,7 +511,7 @@ private fun InputSection(
                     )
                 ) {
                     Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(6.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("粘贴", style = MaterialTheme.typography.labelLarge)
                 }
 
@@ -477,12 +526,20 @@ private fun InputSection(
                     )
                 ) {
                     if (isResolving) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
                     } else {
                         Icon(Icons.Outlined.MusicNote, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
-                    Spacer(Modifier.size(6.dp))
-                    Text(if (isResolving) "解析中..." else "解析", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (isResolving) "解析中..." else "解析",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
@@ -495,15 +552,26 @@ private fun ErrorBanner(error: String) {
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.errorContainer,
         tonalElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth().animateContentSize()
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = Modifier.padding(horizontal = Spacing.cardP, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
         ) {
-            Icon(Icons.Outlined.Clear, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(20.dp))
-            Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
+            Icon(
+                Icons.Outlined.Clear,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
         }
     }
 }
@@ -511,9 +579,11 @@ private fun ErrorBanner(error: String) {
 @Composable
 private fun EmptyStateHint() {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 56.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(Spacing.cardGap)
     ) {
         // 呼吸动画的音符图标
         val breath = remember { Animatable(1f) }
@@ -525,7 +595,7 @@ private fun EmptyStateHint() {
         }
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(80.dp)
                 .scale(breath.value)
                 .clip(CircleShape)
                 .background(
@@ -542,37 +612,63 @@ private fun EmptyStateHint() {
                 Icons.Outlined.MusicNote,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(38.dp)
             )
         }
-        Text(
-            "输入抖音链接开始使用",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            "支持分享链接、视频 ID 与用户主页三种方式",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                "输入抖音链接开始使用",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "支持分享链接、视频 ID 与用户主页三种方式",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
     }
 }
 
+/**
+ * 区块标签：左侧竖条强调 + 标题 + 计数徽章，形成清晰的分区视觉锚点。
+ */
 @Composable
 private fun SectionLabel(text: String, count: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 4.dp, height = 16.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Text(
+            text,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontWeight = FontWeight.SemiBold
+        )
         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
             Text(
                 "$count",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
             )
         }
     }
 }
 
+/**
+ * 结果卡片：图标圆标 + 标题/清晰度两行 + 选中态勾标，内边距 16dp。
+ */
 @Composable
 private fun ResolvedItemCard(
     item: ResolvedMediaItem,
@@ -581,7 +677,10 @@ private fun ResolvedItemCard(
 ) {
     val scale by animateFloatAsState(
         targetValue = if (selected) 1f else 0.98f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
         label = "cardScale"
     )
 
@@ -597,21 +696,25 @@ private fun ResolvedItemCard(
             .combinedClickable(onClick = onClick)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(Spacing.cardP),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = if (item.isImage) Icons.Outlined.AudioFile else Icons.Rounded.MusicNote,
                     contentDescription = null,
-                    tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (selected) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(22.dp)
                 )
             }
@@ -622,28 +725,40 @@ private fun ResolvedItemCard(
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = item.qualityLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                            else MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.secondary
                 )
             }
             if (selected) {
                 Box(
-                    modifier = Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }
     }
 }
 
+/**
+ * 主操作按钮：全宽 56dp，按压缩放反馈。
+ */
 @Composable
 private fun ProcessButton(
     onClick: () -> Unit,
@@ -662,7 +777,10 @@ private fun ProcessButton(
         onClick = onClick,
         enabled = enabled,
         interactionSource = interactionSource,
-        modifier = Modifier.fillMaxWidth().height(56.dp).scale(scale),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .scale(scale),
         shape = MaterialTheme.shapes.large,
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
@@ -672,12 +790,16 @@ private fun ProcessButton(
         )
     ) {
         if (isProcessing) {
-            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.onPrimary)
-            Spacer(Modifier.size(10.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.5.dp,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(Modifier.width(10.dp))
             Text("处理中...", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         } else {
             Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.size(10.dp))
+            Spacer(Modifier.width(10.dp))
             Text("下载并去人声", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
     }
@@ -685,17 +807,43 @@ private fun ProcessButton(
 
 @Composable
 private fun ProcessingCard(progressText: String) {
-    ElevatedCard(shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().animateContentSize()) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.primary)
+    ElevatedCard(
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+    ) {
+        Column(
+            modifier = Modifier.padding(Spacing.cardP),
+            verticalArrangement = Arrangement.spacedBy(Spacing.cardGap)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.cardGap)
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.5.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("正在处理", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Text(progressText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "正在处理",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        progressText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
             LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().height(6.dp).clip(MaterialTheme.shapes.extraSmall),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(MaterialTheme.shapes.extraSmall),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.primaryContainer
             )
@@ -712,13 +860,31 @@ private fun SuccessCard(path: String) {
         tonalElevation = 3.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(28.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("处理完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text(fileName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+        Row(
+            modifier = Modifier.padding(Spacing.cardP),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+        ) {
+            Icon(
+                Icons.Rounded.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(28.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "处理完成",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    fileName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -736,32 +902,55 @@ private fun OptionsSheetContent(
             .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 20.dp)
             .windowInsetsPadding(WindowInsets.navigationBars),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(Spacing.sectionV)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+        ) {
             Box(
-                modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Outlined.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Outlined.Settings,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(20.dp)
+                )
             }
-            Text("处理选项", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "处理选项",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
         }
 
-        Text("输出格式", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutputFormatSelector(
-            value = settings.outputFormat,
-            onSelect = { format -> onUpdateSettings(settings.copy(outputFormat = format)) }
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.tightGap)) {
+            Text(
+                "输出格式",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutputFormatSelector(
+                value = settings.outputFormat,
+                onSelect = { format -> onUpdateSettings(settings.copy(outputFormat = format)) }
+            )
+        }
 
-        SettingRow("成功后删除源文件", "节省存储空间", settings.deleteSourceAfterSuccess) {
-            onUpdateSettings(settings.copy(deleteSourceAfterSuccess = it))
-        }
-        SettingRow("保留处理记录", "在 App 内查看历史", settings.keepHistory) {
-            onUpdateSettings(settings.copy(keepHistory = it))
-        }
-        SettingRow("静音裁剪", "自动去掉尾部静音段", settings.silenceThresholdDb < 0f) { value ->
-            onUpdateSettings(settings.copy(silenceThresholdDb = if (value) -55f else 0f))
+        Column(verticalArrangement = Arrangement.spacedBy(Spacing.tightGap)) {
+            SettingRow("成功后删除源文件", "节省存储空间", settings.deleteSourceAfterSuccess) {
+                onUpdateSettings(settings.copy(deleteSourceAfterSuccess = it))
+            }
+            SettingRow("保留处理记录", "在 App 内查看历史", settings.keepHistory) {
+                onUpdateSettings(settings.copy(keepHistory = it))
+            }
+            SettingRow("静音裁剪", "自动去掉尾部静音段", settings.silenceThresholdDb < 0f) { value ->
+                onUpdateSettings(settings.copy(silenceThresholdDb = if (value) -55f else 0f))
+            }
         }
 
         Button(
@@ -792,15 +981,24 @@ private fun OutputFormatSelector(value: AudioOutputFormat, onSelect: (AudioOutpu
 
 @Composable
 private fun SettingRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.cardP, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
