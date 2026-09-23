@@ -46,7 +46,9 @@ data class AppUiState(
     val downloadPath: String? = null,
     val error: String? = null,
     val showVerification: Boolean = false,
-    val isLoggedIn: Boolean = false
+    val isLoggedIn: Boolean = false,
+    /** 历史伴奏文件（Download/抖音去人声/伴奏 下按时间倒序） */
+    val historyFiles: List<File> = emptyList()
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -71,6 +73,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             kotlinx.coroutines.delay(1_500)
             runCatching { douyinApi.isLoggedIn() }
                 .onSuccess { loggedIn -> _uiState.update { it.copy(isLoggedIn = loggedIn) } }
+        }
+        refreshHistory()
+    }
+
+    /** 扫描公共下载目录的历史伴奏（Download/抖音去人声/伴奏），按修改时间倒序 */
+    fun refreshHistory() {
+        viewModelScope.launch {
+            val files = runCatching { listHistoryFiles() }.getOrDefault(emptyList())
+            _uiState.update { it.copy(historyFiles = files) }
+        }
+    }
+
+    private fun listHistoryFiles(): List<File> {
+        val dir = instrumentalDownloadsDir() ?: return emptyList()
+        return dir.listFiles { f -> f.isFile && f.extension in setOf("mp3", "wav", "flac") }
+            ?.sortedByDescending { it.lastModified() }
+            ?: emptyList()
+    }
+
+    /** 历史伴奏的公共下载目录：Download/抖音去人声/伴奏（Android 10+ 公开可见） */
+    private fun instrumentalDownloadsDir(): File? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "抖音去人声/伴奏"
+            )
+        } else {
+            File(getApplication<Application>().getExternalFilesDir(null), "output").apply { mkdirs() }
         }
     }
 
@@ -325,9 +355,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
         if (settings.deleteSourceAfterSuccess) input.delete()
-        return output.absolutePath
+        // 编码在应用私有目录完成，成功后转存公共下载目录（文件管理器可见、可直接分享）
+        val publicPath = saveInstrumentalToDownloads(output, item.title, extension)
+        output.delete()
+        refreshHistory()
+        return publicPath
+    }
+
+    /** 把生成的伴奏转存到公共下载目录 Download/抖音去人声/伴奏，返回展示路径 */
+    private fun saveInstrumentalToDownloads(source: File, title: String, extension: String): String {
+        val fileName = "${safeName(title)}_伴奏.$extension"
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val mime = when (extension) {
+                "mp3" -> "audio/mpeg"
+                "wav" -> "audio/wav"
+                else -> "audio/flac"
+            }
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/抖音去人声/伴奏"
+                )
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("无法创建下载文件")
+            resolver.openOutputStream(uri)?.use { out ->
+                source.inputStream().use { it.copyTo(out) }
+            } ?: throw IllegalStateException("无法写入下载文件")
+            "下载目录/抖音去人声/伴奏/$fileName"
+        } else {
+            // Android 9 及以下无 MediaStore.Downloads，直接复制到公共下载目录
+            val dir = instrumentalDownloadsDir()!!.apply { mkdirs() }
+            val target = File(dir, fileName)
+            source.copyTo(target, overwrite = true)
+            target.absolutePath
+        }
     }
 
     private fun safeName(value: String): String =
         value.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').ifBlank { "output" }
+
+    /** 分享历史伴奏文件（调出系统分享面板） */
+    fun shareHistoryFile(file: File, onShare: (File) -> Unit) {
+        onShare(file)
+    }
 }

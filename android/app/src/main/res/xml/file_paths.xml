@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 公共下载目录的历史伴奏（Download/抖音去人声/伴奏）：
+         external-path 的根是 Environment.getExternalStorageDirectory() -->
+    <external-path
+        name="downloads"
+        path="Download/抖音去人声/伴奏" />
+    <!-- Android 9 及以下 / 转存前的应用私有输出目录 -->
+    <external-files-path
+        name="output"
+        path="output" />
+    <external-files-path
+        name="downloads_legacy"
+        path="downloads" />
+</paths>

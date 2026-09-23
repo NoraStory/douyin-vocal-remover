@@ -2,6 +2,7 @@ package com.nora.douyinremover.ui
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.webkit.WebView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -53,11 +54,14 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Login
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -107,7 +111,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.io.File
 import com.nora.douyinremover.douyin.DouyinWebSession
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
@@ -297,6 +303,21 @@ private fun DouyinRemoverContent(
             uiState.outputPath?.let { path ->
                 item(key = "success") {
                     SuccessCard(path)
+                }
+            }
+
+            if (uiState.historyFiles.isNotEmpty()) {
+                item(key = "historySection") {
+                    SectionLabel("历史伴奏", uiState.historyFiles.size)
+                }
+                items(
+                    uiState.historyFiles,
+                    key = { it.absolutePath }
+                ) { file ->
+                    HistoryItemCard(
+                        file = file,
+                        onShare = { shareAudioFile(appContext, file) }
+                    )
                 }
             }
         }
@@ -832,6 +853,94 @@ private fun SectionLabel(text: String, count: Int) {
 }
 
 /**
+ * 历史伴奏卡片：文件名 + 大小/日期两行，右侧分享按钮。
+ */
+@Composable
+private fun HistoryItemCard(
+    file: File,
+    onShare: () -> Unit
+) {
+    val dateFmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()) }
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = Spacing.cardP, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Outlined.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    file.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${formatFileSize(file.length())} · ${dateFmt.format(java.util.Date(file.lastModified()))}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                )
+            }
+            IconButton(onClick = onShare) {
+                Icon(
+                    Icons.Rounded.Share,
+                    contentDescription = "分享",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun formatFileSize(bytes: Long): String = when {
+    bytes >= 1 shl 20 -> "%.1fMB".format(bytes / 1024f / 1024f)
+    bytes >= 1 shl 10 -> "${bytes / 1024}KB"
+    else -> "${bytes}B"
+}
+
+/** 调出系统分享面板分享音频文件（FileProvider 提供 content:// URI） */
+private fun shareAudioFile(context: Context, file: File) {
+    runCatching {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = when (file.extension) {
+                "mp3" -> "audio/mpeg"
+                "wav" -> "audio/wav"
+                else -> "audio/flac"
+            }
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享伴奏"))
+    }
+}
+
+/**
  * 结果卡片：图标圆标 + 标题/清晰度两行 + 选中态勾标，内边距 16dp。
  */
 @Composable
@@ -1004,14 +1113,18 @@ private fun ActionButtons(
     }
 }
 
-/** 下载完成卡片（仅下载、未做分离） */
+/** 下载完成卡片（仅下载、未做分离）：路径文字点击可展开看全 */
 @Composable
 private fun DownloadSuccessCard(path: String) {
+    var expanded by rememberSaveable(path) { mutableStateOf(false) }
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.secondaryContainer,
         tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .combinedClickable(onClick = { expanded = !expanded })
     ) {
         Row(
             modifier = Modifier.padding(Spacing.cardP),
@@ -1035,10 +1148,18 @@ private fun DownloadSuccessCard(path: String) {
                     path,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
-                    maxLines = 1,
+                    maxLines = if (expanded) Int.MAX_VALUE else 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            Icon(
+                Icons.Rounded.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(22.dp)
+                    .scale(if (expanded) 1f else -1f)
+            )
         }
     }
 }
@@ -1155,14 +1276,18 @@ private fun ProcessingCard(progressText: String, progressPercent: Int, progressD
     }
 }
 
+/** 处理完成卡片：路径文字默认单行省略，点击可展开看全 */
 @Composable
 private fun SuccessCard(path: String) {
-    val fileName = path.substringAfterLast("/").substringAfterLast("\\")
+    var expanded by rememberSaveable(path) { mutableStateOf(false) }
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.primaryContainer,
         tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .combinedClickable(onClick = { expanded = !expanded })
     ) {
         Row(
             modifier = Modifier.padding(Spacing.cardP),
@@ -1183,13 +1308,21 @@ private fun SuccessCard(path: String) {
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
-                    fileName,
+                    path,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                    maxLines = 1,
+                    maxLines = if (expanded) Int.MAX_VALUE else 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            Icon(
+                Icons.Rounded.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(22.dp)
+                    .scale(if (expanded) 1f else -1f)
+            )
         }
     }
 }
