@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Clear
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Link
@@ -83,6 +84,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -173,6 +175,7 @@ private fun DouyinRemoverContent(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val appContext = LocalContext.current.applicationContext
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -195,6 +198,11 @@ private fun DouyinRemoverContent(
                 HeaderSection(
                     onOpenOptions = { showOptions = true },
                     onOpenLogin = onOpenLogin,
+                    onCopyLogs = {
+                        scope.launch {
+                            copyLogsToClipboard(appContext)
+                        }
+                    },
                     isLoggedIn = uiState.isLoggedIn,
                     formatLabel = settings.outputFormat.label()
                 )
@@ -224,7 +232,14 @@ private fun DouyinRemoverContent(
                         enter = fadeIn() + scaleIn(initialScale = 0.92f),
                         exit = fadeOut() + scaleOut(targetScale = 0.92f)
                     ) {
-                        ErrorBanner(error)
+                        ErrorBanner(
+                            error = error,
+                            onCopyLogs = {
+                                scope.launch {
+                                    copyLogsToClipboard(appContext)
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -306,12 +321,13 @@ private fun DouyinRemoverContent(
 }
 
 /**
- * 页头：标题 + 副标题左对齐，设置按钮右上角；格式 Chip 与登录态 Chip 与标题基线对齐。
+ * 页头：标题 + 副标题左对齐，右上角复制日志与设置按钮；格式 Chip 与登录态 Chip 与标题基线对齐。
  */
 @Composable
 private fun HeaderSection(
     onOpenOptions: () -> Unit,
     onOpenLogin: () -> Unit,
+    onCopyLogs: () -> Unit,
     isLoggedIn: Boolean,
     formatLabel: String
 ) {
@@ -335,19 +351,36 @@ private fun HeaderSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                onClick = onOpenOptions,
-                modifier = Modifier.size(44.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Icon(
-                        Icons.Outlined.Settings,
-                        contentDescription = "处理选项",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(22.dp)
-                    )
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    onClick = onCopyLogs,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = "复制日志",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    onClick = onOpenOptions,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            Icons.Outlined.Settings,
+                            contentDescription = "处理选项",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }
@@ -643,7 +676,7 @@ private fun InputSection(
 }
 
 @Composable
-private fun ErrorBanner(error: String) {
+private fun ErrorBanner(error: String, onCopyLogs: () -> Unit) {
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.errorContainer,
@@ -652,24 +685,54 @@ private fun ErrorBanner(error: String) {
             .fillMaxWidth()
             .animateContentSize()
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = Spacing.cardP, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
-        ) {
-            Icon(
-                Icons.Outlined.Clear,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.size(20.dp)
-            )
-            Text(
-                error,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer
-            )
+        Column(modifier = Modifier.padding(horizontal = Spacing.cardP, vertical = 12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+            ) {
+                Icon(
+                    Icons.Outlined.Clear,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onCopyLogs) {
+                    Icon(
+                        Icons.Outlined.ContentCopy,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "复制日志",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
         }
     }
+}
+
+/** 收集本进程日志写入剪贴板，并 Toast 提示 */
+private fun copyLogsToClipboard(context: Context) {
+    val logs = AppLog.collect()
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("app_logs", logs))
+    android.util.Log.i("CopyLog", "copied ${logs.length} chars to clipboard")
+    android.widget.Toast.makeText(context, "日志已复制，可直接粘贴反馈", android.widget.Toast.LENGTH_SHORT).show()
 }
 
 @Composable
