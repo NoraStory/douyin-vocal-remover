@@ -21,8 +21,8 @@ android {
         applicationId = "com.nora.douyinremover"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10
-        versionName = "1.4.1"
+        versionCode = 11
+        versionName = "1.5.0"
 
         ndk {
             // ffmpeg-kit-maintained 8.x 原生库仅提供 arm64-v8a 与 x86_64（模拟器），
@@ -52,6 +52,12 @@ android {
         }
     }
 
+    // 模型文件（约 353MB）已从 APK 分离：首次启动由 ModelDownloader 从 Release 资产下载，
+    // 之后更新只下载约 40MB 的 APK。模型源文件保留在 android/app/src/main/assets.models/（不打包），
+    // 发布脚本从该目录上传 Release 资产。
+    androidResources {
+        noCompress += "onnx"
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -70,6 +76,7 @@ dependencies {
     implementation(project(":douyin"))
     implementation(project(":audio-engine"))
     implementation(project(":settings"))
+    implementation(project(":updater"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

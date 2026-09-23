@@ -120,6 +120,7 @@ import com.nora.douyinremover.douyin.DouyinWebSession
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
+import com.nora.douyinremover.updater.UpdateInfo
 import kotlinx.coroutines.launch
 
 /**
@@ -166,6 +167,11 @@ fun DouyinRemoverApp(viewModel: AppViewModel) {
                 viewModel.updateSettings(settings.copy(showGuideOnLaunch = false))
             }
         },
+        onUpdate = viewModel::startUpdate,
+        onDismissUpdate = viewModel::dismissUpdate,
+        onCancelUpdateDownload = viewModel::cancelUpdateDownload,
+        onDownloadModel = viewModel::downloadModel,
+        onCancelModelDownload = viewModel::cancelModelDownload,
         onInputChange = viewModel::updateInput,
         onResolve = viewModel::resolve,
         onSelectItem = viewModel::selectItem,
@@ -185,6 +191,11 @@ private fun DouyinRemoverContent(
     settings: ProcessingSettings,
     showGuide: Boolean,
     onDismissGuide: (Boolean) -> Unit,
+    onUpdate: () -> Unit,
+    onDismissUpdate: () -> Unit,
+    onCancelUpdateDownload: () -> Unit,
+    onDownloadModel: () -> Unit,
+    onCancelModelDownload: () -> Unit,
     onInputChange: (String) -> Unit,
     onResolve: () -> Unit,
     onSelectItem: (ResolvedMediaItem) -> Unit,
@@ -267,6 +278,19 @@ private fun DouyinRemoverContent(
                             }
                         )
                     }
+                }
+            }
+
+            // 模型资源下载卡片（首次启动模型未就绪时显示）
+            if (!uiState.modelReady) {
+                item(key = "modelDownload") {
+                    ModelDownloadCard(
+                        fileName = uiState.modelFileName,
+                        progress = uiState.modelDownloadProgress,
+                        error = uiState.modelDownloadError,
+                        onDownload = onDownloadModel,
+                        onCancel = onCancelModelDownload
+                    )
                 }
             }
 
@@ -372,6 +396,145 @@ private fun DouyinRemoverContent(
     }
     if (showGuideDialog) {
         GuideDialog(onDismiss = { showGuideDialog = false })
+    }
+
+    // 更新弹窗：强制更新全屏不可关闭；普通更新为普通弹窗
+    uiState.updateInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            force = uiState.forceUpdate,
+            downloadProgress = uiState.updateDownloadProgress,
+            onUpdate = onUpdate,
+            onDismiss = onDismissUpdate,
+            onCancelDownload = onCancelUpdateDownload
+        )
+    }
+}
+
+/**
+ * 更新弹窗：强制更新全屏不可跳过（无"暂不"），普通更新可关闭。
+ * 下载中显示进度条，完成后自动拉起系统安装器。
+ */
+@Composable
+private fun UpdateDialog(
+    info: UpdateInfo,
+    force: Boolean,
+    downloadProgress: Triple<Long, Long, Boolean>?,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit,
+    onCancelDownload: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = { if (!force && downloadProgress == null) onDismiss() },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnClickOutside = !force,
+            dismissOnBackPress = !force
+        )
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (force) 8.dp else 20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+                ) {
+                    Icon(
+                        Icons.Outlined.Download,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Column {
+                        Text(
+                            if (force) "发现重要更新 v${info.latestVersion}" else "发现新版本 v${info.latestVersion}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (force) {
+                            Text(
+                                "当前版本过旧，需要更新后才能继续使用",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+
+                if (info.releaseNotes.isNotBlank()) {
+                    Text(
+                        info.releaseNotes.take(500),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                downloadProgress?.let { (done, total, _) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val percent = if (total > 0) ((done * 100) / total).toInt().coerceIn(0, 100) else 0
+                        LinearProgressIndicator(
+                            progress = { percent / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "正在下载更新  ${formatFileSize(done)}" +
+                                (if (total > 0) " / ${formatFileSize(total)}" else "") +
+                                "  $percent%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)
+                ) {
+                    if (!force && downloadProgress == null) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            Text("暂不")
+                        }
+                    }
+                    if (downloadProgress != null) {
+                        OutlinedButton(
+                            onClick = onCancelDownload,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            Text("取消下载")
+                        }
+                    }
+                    Button(
+                        onClick = onUpdate,
+                        enabled = downloadProgress == null,
+                        modifier = Modifier.weight(2f).height(46.dp),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            if (downloadProgress != null) "下载中..." else "立即更新",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -893,6 +1056,114 @@ private fun SectionLabel(text: String, count: Int) {
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
             )
+        }
+    }
+}
+
+/**
+ * 模型资源下载卡片：AI 分离模型已从 APK 分离，首次使用需联网下载一次。
+ */
+@Composable
+private fun ModelDownloadCard(
+    fileName: String,
+    progress: Triple<Long, Long, Boolean>?,
+    error: String?,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit
+) {
+    ElevatedCard(
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(Spacing.cardP),
+            verticalArrangement = Arrangement.spacedBy(Spacing.cardGap)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.Download,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "AI 模型资源下载",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "人声分离模型（${fileName.ifBlank { "htdemucs" }}）需要联网下载一次，之后更新应用无需重复下载",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            progress?.let { (done, total, _) ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val percent = if (total > 0) ((done * 100) / total).toInt().coerceIn(0, 100) else 0
+                    LinearProgressIndicator(
+                        progress = { percent / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "${formatFileSize(done)}" +
+                            (if (total > 0) " / ${formatFileSize(total)}" else "") +
+                            "  $percent%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            error?.let { message ->
+                Text(
+                    "下载失败：$message",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.tightGap)) {
+                if (progress != null) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        modifier = Modifier.weight(1f).height(42.dp),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text("取消")
+                    }
+                }
+                Button(
+                    onClick = onDownload,
+                    enabled = progress == null,
+                    modifier = Modifier.weight(2f).height(42.dp),
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Text(
+                        when {
+                            progress != null -> "下载中..."
+                            error != null -> "重试下载"
+                            else -> "开始下载"
+                        },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         }
     }
 }

@@ -20,6 +20,16 @@ import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
 import com.nora.douyinremover.settings.SettingsRepository
+import com.nora.douyinremover.updater.ApkDownloader
+import com.nora.douyinremover.updater.ApkInstaller
+import com.nora.douyinremover.updater.CancelFlag
+import com.nora.douyinremover.updater.DownloadCancelledException
+import com.nora.douyinremover.updater.ModelAsset
+import com.nora.douyinremover.updater.ModelDownloader
+import com.nora.douyinremover.updater.UpdateCheckWorker
+import com.nora.douyinremover.updater.UpdateChecker
+import com.nora.douyinremover.updater.UpdateInfo
+import com.nora.douyinremover.updater.UpdateRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -48,17 +58,40 @@ data class AppUiState(
     val showVerification: Boolean = false,
     val isLoggedIn: Boolean = false,
     /** 历史伴奏文件（Download/抖音去人声/伴奏 下按时间倒序） */
-    val historyFiles: List<File> = emptyList()
+    val historyFiles: List<File> = emptyList(),
+    /** 远端检测到的新版本（null = 无更新） */
+    val updateInfo: UpdateInfo? = null,
+    /** 是否强制更新（落后一个大版本及以上） */
+    val forceUpdate: Boolean = false,
+    /** 更新 APK 下载进度：null = 未在下载；(已下载字节, 总字节, 是否完成) */
+    val updateDownloadProgress: Triple<Long, Long, Boolean>? = null,
+    /** 模型是否已就绪（首次启动需下载） */
+    val modelReady: Boolean = true,
+    /** 需要下载的模型文件名 */
+    val modelFileName: String = "",
+    /** 模型下载进度：null = 未在下载；(已下载字节, 总字节, 是否完成) */
+    val modelDownloadProgress: Triple<Long, Long, Boolean>? = null,
+    /** 模型下载失败信息 */
+    val modelDownloadError: String? = null
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val context = application
     private val douyinApi = DouyinApi(context)
     private val settingsRepository = SettingsRepository(context)
+    private val separator = OnnxDemucsSeparator(context)
     private val audioProcessor = AudioProcessor(
         encoder = FfmpegMediaEncoder(),
-        separator = OnnxDemucsSeparator(context)
+        separator = separator
     )
+    private val updateChecker = UpdateChecker()
+    private val updateRepository = UpdateRepository(context)
+    private val apkDownloader = ApkDownloader()
+    private val modelDownloader = ModelDownloader()
+    private var updateCancelFlag = CancelFlag()
+    private var modelCancelFlag = CancelFlag()
+    private var currentVersion: String =
+        application.packageManager.getPackageInfo(application.packageName, 0).versionName ?: "0.0.0"
 
     val settings: StateFlow<ProcessingSettings> = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ProcessingSettings())
@@ -75,6 +108,142 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { loggedIn -> _uiState.update { it.copy(isLoggedIn = loggedIn) } }
         }
         refreshHistory()
+        initUpdateAndModel()
+    }
+
+    /** 启动时：注册周期检测 + 立即首检 + 检查本地模型 */
+    private fun initUpdateAndModel() {
+        runCatching {
+            UpdateCheckWorker.schedulePeriodic(context)
+            UpdateCheckWorker.checkNow(context)
+        }
+        viewModelScope.launch {
+            // 观察 Worker 的检测结果（DataStore）
+            updateRepository.state.collect { state ->
+                if (state.hasUpdate &&
+                    UpdateChecker.compareVersions(currentVersion, state.latestVersion) > 0
+                ) {
+                    val info = UpdateInfo(
+                        latestVersion = state.latestVersion,
+                        apkUrl = state.apkUrl,
+                        apkSize = state.apkSize,
+                        releaseNotes = state.releaseNotes,
+                        source = state.source
+                    )
+                    _uiState.update {
+                        it.copy(
+                            updateInfo = info,
+                            forceUpdate = UpdateChecker.isForceUpdate(currentVersion, state.latestVersion)
+                        )
+                    }
+                }
+            }
+        }
+        checkModelReady()
+    }
+
+    /** 检查本地模型是否就绪（未就绪则 UI 显示下载卡片） */
+    fun checkModelReady() {
+        val ready = runCatching { separator.isModelReady() }.getOrDefault(false)
+        _uiState.update {
+            it.copy(
+                modelReady = ready,
+                modelFileName = runCatching { separator.requiredModelFileName() }.getOrDefault(""),
+                modelDownloadError = if (ready) null else it.modelDownloadError
+            )
+        }
+    }
+
+    /** 下载缺失的模型（双源 + 断点续传 + SHA-256），完成后自动就绪 */
+    fun downloadModel() {
+        if (_uiState.value.modelDownloadProgress != null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(modelDownloadProgress = Triple(0L, -1L, false), modelDownloadError = null) }
+            runCatching {
+                val assets = updateChecker.fetchModelAssets()
+                val target = assets.firstOrNull { it.fileName == _uiState.value.modelFileName }
+                    ?: assets.firstOrNull()
+                    ?: throw IllegalStateException("Release 中没有找到模型资产，请稍后重试")
+                modelDownloader.download(
+                    asset = target,
+                    modelsDir = separator.modelsDir,
+                    onProgress = { done, total ->
+                        _uiState.update { it.copy(modelDownloadProgress = Triple(done, total, false)) }
+                    },
+                    isCancelled = { modelCancelFlag.cancelled }
+                )
+            }.onSuccess {
+                checkModelReady()
+                _uiState.update { it.copy(modelDownloadProgress = Triple(1L, 1L, true)) }
+            }.onFailure { error ->
+                if (error is DownloadCancelledException) {
+                    _uiState.update { it.copy(modelDownloadProgress = null) }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            modelDownloadProgress = null,
+                            modelDownloadError = error.message ?: "模型下载失败"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelModelDownload() {
+        modelCancelFlag.cancelled = true
+        modelCancelFlag = CancelFlag()
+    }
+
+    /** 立即更新：下载 APK（断点续传）→ 完成后拉起系统安装器 */
+    fun startUpdate() {
+        val info = _uiState.value.updateInfo ?: return
+        if (info.apkUrl.isBlank()) {
+            _uiState.update { it.copy(error = "更新包地址无效，请到项目主页手动下载") }
+            return
+        }
+        if (_uiState.value.updateDownloadProgress != null) return
+        if (!ApkInstaller.canInstall(context)) {
+            ApkInstaller.requestInstallPermission(context)
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(updateDownloadProgress = Triple(0L, info.apkSize, false)) }
+            runCatching {
+                apkDownloader.download(
+                    url = info.apkUrl,
+                    targetFile = ApkInstaller.apkFile(context),
+                    onProgress = { done, total ->
+                        _uiState.update { it.copy(updateDownloadProgress = Triple(done, total, false)) }
+                    },
+                    isCancelled = { updateCancelFlag.cancelled }
+                )
+            }.onSuccess { apk ->
+                _uiState.update { it.copy(updateDownloadProgress = Triple(1L, 1L, true)) }
+                ApkInstaller.install(context, apk)
+            }.onFailure { error ->
+                if (error is DownloadCancelledException) {
+                    _uiState.update { it.copy(updateDownloadProgress = null) }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            updateDownloadProgress = null,
+                            error = "更新下载失败：${error.message ?: "未知错误"}"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelUpdateDownload() {
+        updateCancelFlag.cancelled = true
+        updateCancelFlag = CancelFlag()
+    }
+
+    /** 普通更新点"暂不"：本次启动不再提醒（强制更新无此入口） */
+    fun dismissUpdate() {
+        _uiState.update { it.copy(updateInfo = null, forceUpdate = false) }
     }
 
     /** 扫描公共下载目录的历史伴奏（Download/抖音去人声/伴奏），按修改时间倒序 */
@@ -189,6 +358,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun processSelected() {
         val item = _uiState.value.selectedItem ?: return
         val currentSettings = settings.value
+        // 模型未就绪（首次启动未下载）时禁止分离，提示先下载模型
+        if (!runCatching { separator.isModelReady() }.getOrDefault(false)) {
+            _uiState.update { it.copy(error = "AI 模型尚未下载，请先在「资源下载」卡片中完成模型下载") }
+            checkModelReady()
+            return
+        }
         viewModelScope.launch {
             // 前台服务保活：vivo OriginOS 等系统会在切后台/息屏后冻结进程，
             // 推理线程停摆表现为"卡住"。处理期间挂常驻通知防止冻结。

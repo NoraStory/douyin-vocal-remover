@@ -21,8 +21,8 @@ import java.util.Collections
  */
 class OnnxDemucsSeparator(
     private val context: Context,
-    private val modelAssetPath: String = "models/htdemucs_fp32.onnx",
-    private val fp16ModelAssetPath: String = "models/htdemucs_fp16.onnx"
+    private val fp32ModelFileName: String = "htdemucs_fp32.onnx",
+    private val fp16ModelFileName: String = "htdemucs_fp16.onnx"
 ) : AudioSeparator {
     private val ortEnvironment: OrtEnvironment by lazy {
         Log.i(TAG, "initializing OrtEnvironment")
@@ -48,35 +48,34 @@ class OnnxDemucsSeparator(
             android.os.Build.MODEL.contains("sdk_gphone")
     }
 
-    private val activeModelAsset: String by lazy {
-        // fp32 模型 243MB，CPU EP 加载后 RSS 约 1.2GB，低内存设备直接被系统 OOM 杀掉；
-        // fp16 模型 128MB，权重减半，低内存设备强制使用。
-        if (isLowMemoryDevice) fp16ModelAssetPath else modelAssetPath
+    private val activeModelFileName: String by lazy {
+        // fp32 模型 231MB，CPU EP 加载后 RSS 约 1.2GB，低内存设备直接被系统 OOM 杀掉；
+        // fp16 模型 122MB，权重减半，低内存设备强制使用。
+        if (isLowMemoryDevice) fp16ModelFileName else fp32ModelFileName
     }
 
+    /** 模型已从 APK 分离，统一从 filesDir/models 读取（由 ModelDownloader 首次下载） */
+    val modelsDir: File get() = File(context.filesDir, "models")
+
+    /** 当前档位模型是否已就绪（UI 据此决定是否需要先下载模型） */
+    fun isModelReady(): Boolean = File(modelsDir, activeModelFileName).let { it.exists() && it.length() > 0 }
+
+    /** 需要的模型文件名（UI 下载卡片展示用） */
+    fun requiredModelFileName(): String = activeModelFileName
+
     /**
-     * 模型文件较大，不能 readBytes() 读进 Java 堆（直接 OOM）。
-     * 先把 assets 里的模型拷到 filesDir，再用文件路径创建 Session，
-     * ONNX Runtime 会 mmap 模型文件，不占用 Java 堆。
+     * 模型文件路径：直接指向 filesDir/models/<name>，ONNX Runtime 会 mmap 模型文件。
+     * 模型缺失时抛 ModelNotReadyException，由上层引导用户先下载模型。
      */
     private val modelFilePath: String by lazy {
-        val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
-        val assetName = File(activeModelAsset).name
-        val target = File(modelsDir, assetName)
+        val target = File(modelsDir, activeModelFileName)
         if (!target.exists() || target.length() == 0L) {
-            context.assets.open(activeModelAsset).use { input ->
-                val tmp = File(modelsDir, "$assetName.tmp")
-                tmp.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
-                if (!tmp.renameTo(target)) {
-                    tmp.copyTo(target, overwrite = true)
-                    tmp.delete()
-                }
-            }
+            throw ModelNotReadyException(activeModelFileName)
         }
         target.absolutePath
     }
     private val session: OrtSession by lazy {
-        Log.i(TAG, "creating OrtSession model=$activeModelAsset lowMemory=$isLowMemoryDevice")
+        Log.i(TAG, "creating OrtSession model=$activeModelFileName lowMemory=$isLowMemoryDevice")
         val options = OrtSession.SessionOptions().apply {
             // NNAPI 会把整份模型复制进驱动内存（fp32 模型在 2GB 设备上直接触发系统 OOM），
             // 且本模型 92 个卷积里 80 个是 1D 卷积（Demucs 为时域模型），

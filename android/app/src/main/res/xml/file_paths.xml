@@ -12,4 +12,8 @@
     <external-files-path
         name="downloads_legacy"
         path="downloads" />
+    <!-- 应用内更新 APK（cache/update/） -->
+    <cache-path
+        name="update_apk"
+        path="update" />
 </paths>
