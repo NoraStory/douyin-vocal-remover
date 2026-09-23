@@ -10,6 +10,7 @@ class AudioProcessor(
     private val separator: AudioSeparator
 ) {
     suspend fun process(request: SeparationRequest): SeparationResult = withContext(Dispatchers.IO) {
+        val onProgress = request.onProgress
         val workDir = File(request.outputPath).parentFile
             ?: throw IllegalStateException("输出路径无效")
         workDir.mkdirs()
@@ -19,13 +20,29 @@ class AudioProcessor(
         val encodedPath = File(workDir, "instrumental_encoded.${request.outputFormat}").absolutePath
 
         Log.i(TAG, "stage=extract begin ${request.inputPath}")
+        onProgress?.invoke(ProcessProgress(ProcessStage.EXTRACT, -1f))
         val extracted = encoder.extractPcm(request.inputPath, rawPath)
         Log.i(TAG, "stage=extract done durationMs=${extracted.durationMs}")
+        onProgress?.invoke(ProcessProgress(ProcessStage.EXTRACT, 1f))
+
         try {
             // 流式分段分离：输入/输出都走文件，任意时刻内存中只保留一个推理段（约 5MB）
             Log.i(TAG, "stage=separate begin")
-            separator.separateToInstrumentalFile(rawPath, separatedPath, extracted.channels, extracted.sampleRate)
+            separator.separateToInstrumentalFile(
+                rawPath, separatedPath, extracted.channels, extracted.sampleRate
+            ) { segmentIndex, totalSegments ->
+                onProgress?.invoke(
+                    ProcessProgress(
+                        stage = ProcessStage.SEPARATE,
+                        stageProgress = segmentIndex.toFloat() / totalSegments,
+                        detail = "第 $segmentIndex/$totalSegments 段"
+                    )
+                )
+            }
             Log.i(TAG, "stage=separate done")
+            onProgress?.invoke(ProcessProgress(ProcessStage.SEPARATE, 1f))
+
+            onProgress?.invoke(ProcessProgress(ProcessStage.ENCODE, -1f))
             encoder.encodePcm(
                 rawPath = separatedPath,
                 outputPath = encodedPath,
@@ -35,13 +52,16 @@ class AudioProcessor(
                 channels = extracted.channels
             )
             Log.i(TAG, "stage=encode done")
+            onProgress?.invoke(ProcessProgress(ProcessStage.ENCODE, 1f))
 
+            onProgress?.invoke(ProcessProgress(ProcessStage.FINALIZE, -1f))
             if (request.silenceThresholdDb < 0f) {
                 encoder.trimSilence(encodedPath, request.outputPath, request.silenceThresholdDb, request.bitrateKbps)
             } else {
                 File(encodedPath).copyTo(File(request.outputPath), overwrite = true)
             }
             Log.i(TAG, "stage=finalize done -> ${request.outputPath}")
+            onProgress?.invoke(ProcessProgress(ProcessStage.FINALIZE, 1f))
         } finally {
             File(rawPath).delete()
             File(separatedPath).delete()

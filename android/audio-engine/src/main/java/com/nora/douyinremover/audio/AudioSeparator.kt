@@ -5,10 +5,14 @@ package com.nora.douyinremover.audio
  * 实现内部按段读取推理，避免整曲载入内存导致 OOM。
  */
 interface AudioSeparator {
+    /**
+     * @param onSegmentProgress 分段进度回调：(已完成段数, 总段数)
+     */
     suspend fun separateToInstrumentalFile(
         inputPcmPath: String,
         outputPcmPath: String,
         channels: Int,
-        sampleRate: Int
+        sampleRate: Int,
+        onSegmentProgress: (suspend (Int, Int) -> Unit)? = null
     )
 }

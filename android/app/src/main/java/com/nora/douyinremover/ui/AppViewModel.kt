@@ -11,6 +11,7 @@ import com.nora.douyinremover.audio.AudioProcessor
 import com.nora.douyinremover.audio.FfmpegMediaEncoder
 import com.nora.douyinremover.audio.NoAudioTrackException
 import com.nora.douyinremover.audio.OnnxDemucsSeparator
+import com.nora.douyinremover.audio.ProcessStage
 import com.nora.douyinremover.audio.SeparationRequest
 import com.nora.douyinremover.douyin.DouyinApi
 import com.nora.douyinremover.douyin.NeedVerificationException
@@ -34,7 +35,12 @@ data class AppUiState(
     val isResolving: Boolean = false,
     val isProcessing: Boolean = false,
     val isDownloading: Boolean = false,
+    /** 当前处理阶段（ProcessStage.label） */
     val progressText: String = "",
+    /** 全局进度 0-100 */
+    val progressPercent: Int = 0,
+    /** 阶段附加说明（如 "第 3/25 段"） */
+    val progressDetail: String = "",
     val outputPath: String? = null,
     val downloadPath: String? = null,
     val error: String? = null,
@@ -153,13 +159,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val item = _uiState.value.selectedItem ?: return
         val currentSettings = settings.value
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, progressText = "下载媒体", error = null, outputPath = null) }
+            _uiState.update {
+                it.copy(
+                    isProcessing = true,
+                    progressText = "下载媒体",
+                    progressPercent = 0,
+                    progressDetail = "",
+                    error = null,
+                    outputPath = null
+                )
+            }
             runCatching { process(item, currentSettings) }
                 .onSuccess { output ->
                     _uiState.update {
                         it.copy(
                             isProcessing = false,
                             progressText = "完成",
+                            progressPercent = 100,
+                            progressDetail = "",
                             outputPath = output,
                             error = null
                         )
@@ -170,6 +187,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             isProcessing = false,
                             progressText = "",
+                            progressPercent = 0,
+                            progressDetail = "",
                             error = error.message ?: "处理失败"
                         )
                     }
@@ -253,7 +272,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun processOne(item: ResolvedMediaItem, settings: ProcessingSettings): String {
         val workDir = File(context.getExternalFilesDir(null), "processing").apply { mkdirs() }
         val input = File(workDir, "source_${System.currentTimeMillis()}.${if (item.isImage) "img" else "mp4"}")
-        val bytes = douyinApi.download(item.url, emptyMap())
+        val bytes = douyinApi.download(item.url, emptyMap()) { downloaded, total ->
+            val percent = if (total > 0) (downloaded * 100 / total).toInt() else -1
+            val detail = if (total > 0) "${downloaded / 1024 / 1024}MB / ${total / 1024 / 1024}MB" else "${downloaded / 1024 / 1024}MB"
+            _uiState.update {
+                it.copy(
+                    progressText = "下载媒体",
+                    progressPercent = if (percent >= 0) (percent * 0.15).toInt() else 5,
+                    progressDetail = detail
+                )
+            }
+        }
         input.writeBytes(bytes)
 
         val format = settings.outputFormat
@@ -278,7 +307,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 outputPath = output.absolutePath,
                 outputFormat = extension,
                 bitrateKbps = bitrate,
-                silenceThresholdDb = settings.silenceThresholdDb
+                silenceThresholdDb = settings.silenceThresholdDb,
+                onProgress = { progress ->
+                    _uiState.update {
+                        it.copy(
+                            progressText = progress.stage.label,
+                            progressPercent = progress.overallPercent,
+                            progressDetail = progress.detail
+                        )
+                    }
+                }
             )
         )
         if (settings.deleteSourceAfterSuccess) input.delete()

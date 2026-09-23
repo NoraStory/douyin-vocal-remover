@@ -279,7 +279,13 @@ private fun DouyinRemoverContent(
             }
 
             if (uiState.isProcessing) {
-                item(key = "processing") { ProcessingCard(uiState.progressText) }
+                item(key = "processing") {
+                    ProcessingCard(
+                        progressText = uiState.progressText,
+                        progressPercent = uiState.progressPercent,
+                        progressDetail = uiState.progressDetail
+                    )
+                }
             }
 
             uiState.downloadPath?.let { path ->
@@ -1037,8 +1043,15 @@ private fun DownloadSuccessCard(path: String) {
     }
 }
 
+/**
+ * 处理进度卡片：步骤条（提取→分离→编码→收尾）+ 全局进度条 + 当前阶段说明。
+ */
 @Composable
-private fun ProcessingCard(progressText: String) {
+private fun ProcessingCard(progressText: String, progressPercent: Int, progressDetail: String) {
+    // 步骤顺序与 ProcessStage 一致；progressText 即当前阶段 label
+    val steps = listOf("提取音频", "AI 分离人声", "编码导出", "收尾处理")
+    val currentStep = steps.indexOf(progressText).coerceAtLeast(0)
+
     ElevatedCard(
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
@@ -1049,9 +1062,10 @@ private fun ProcessingCard(progressText: String) {
             modifier = Modifier.padding(Spacing.cardP),
             verticalArrangement = Arrangement.spacedBy(Spacing.cardGap)
         ) {
+            // 标题行：进度百分比 + 当前阶段
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.cardGap)
+                horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(24.dp),
@@ -1060,18 +1074,76 @@ private fun ProcessingCard(progressText: String) {
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "正在处理",
+                        "正在处理 · $progressText",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Text(
-                        progressText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (progressDetail.isNotBlank()) {
+                        Text(
+                            progressDetail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Text(
+                    "$progressPercent%",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            // 步骤条：圆点 + 连接线，已完成实心、当前呼吸、未开始空心
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                steps.forEachIndexed { index, step ->
+                    val done = index < currentStep || progressPercent >= 100
+                    val active = index == currentStep && progressPercent < 100
+                    val stepColor = when {
+                        done -> MaterialTheme.colorScheme.primary
+                        active -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.outlineVariant
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(if (active) 14.dp else 12.dp)
+                                .clip(CircleShape)
+                                .background(stepColor)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            step,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (done || active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1
+                        )
+                    }
+                    if (index < steps.lastIndex) {
+                        Box(
+                            modifier = Modifier
+                                .weight(0.6f)
+                                .height(2.dp)
+                                .background(
+                                    if (index < currentStep) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant
+                                )
+                        )
+                    }
                 }
             }
+
+            // 全局进度条
             LinearProgressIndicator(
+                progress = { progressPercent / 100f },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp)

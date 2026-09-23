@@ -190,12 +190,37 @@ class DouyinApi(
 
     suspend fun isLoggedIn(): Boolean = withContext(Dispatchers.IO) { cookieStore.isLoggedIn() }
 
-    suspend fun download(url: String, headers: Map<String, String>): ByteArray = withContext(Dispatchers.IO) {
+    /**
+     * 下载媒体文件。
+     * @param onProgress 已下载字节回调：(已下载, 总字节)；总字节未知时为 -1
+     */
+    suspend fun download(
+        url: String,
+        headers: Map<String, String>,
+        onProgress: ((Long, Long) -> Unit)? = null
+    ): ByteArray = withContext(Dispatchers.IO) {
         val builder = Request.Builder().url(url).header("Referer", "https://www.douyin.com/")
         headers.forEach { (name, value) -> builder.header(name, value) }
         client.newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) throw IOException("下载失败: ${response.code}")
-            response.body?.bytes() ?: throw IOException("下载内容为空")
+            val body = response.body ?: throw IOException("下载内容为空")
+            val total = body.contentLength()
+            val sink = okio.Buffer()
+            body.source().use { source ->
+                var read: Long
+                var downloaded = 0L
+                var lastReport = 0L
+                while (source.read(sink, 64 * 1024).also { read = it } != -1L) {
+                    downloaded += read
+                    // 每 256KB 上报一次，避免回调风暴
+                    if (downloaded - lastReport >= 256 * 1024) {
+                        onProgress?.invoke(downloaded, total)
+                        lastReport = downloaded
+                    }
+                }
+                onProgress?.invoke(downloaded, total)
+            }
+            sink.readByteArray()
         }
     }
 

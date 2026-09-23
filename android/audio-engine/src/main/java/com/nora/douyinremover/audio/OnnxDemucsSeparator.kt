@@ -100,7 +100,8 @@ class OnnxDemucsSeparator(
         inputPcmPath: String,
         outputPcmPath: String,
         channels: Int,
-        sampleRate: Int
+        sampleRate: Int,
+        onSegmentProgress: (suspend (Int, Int) -> Unit)?
     ): Unit {
         require(channels == CHANNELS) { "当前模型需要 2 声道" }
         require(sampleRate == SAMPLE_RATE) { "当前模型需要 44100Hz" }
@@ -123,10 +124,13 @@ class OnnxDemucsSeparator(
                 val totalFrames = (inputFile.length() / 4 / CHANNELS).toLong()
                 if (totalFrames <= 0) return@withContext
 
+                // 预计算总段数（用于进度百分比）
+                val hop = SEGMENT_SAMPLES - OVERLAP_SAMPLES
+                val totalSegments = ((totalFrames + hop - 1) / hop).toInt().coerceAtLeast(1)
+
             // 输出文件先补齐到与输入等长（后续按帧覆盖）
             outputFile.setLength(totalFrames * CHANNELS * 4L)
 
-            val hop = SEGMENT_SAMPLES - OVERLAP_SAMPLES
             // 段缓冲：交错读取的原始段 + 交错的分离结果（各约 2.5MB float）
             val segment = FloatArray(SEGMENT_SAMPLES * CHANNELS)
             val mixed = FloatArray(SEGMENT_SAMPLES * CHANNELS)
@@ -188,8 +192,9 @@ class OnnxDemucsSeparator(
 
                 frameStart += hop
                 segmentIndex++
+                onSegmentProgress?.invoke(segmentIndex, totalSegments)
                 if (segmentIndex % 10 == 0) {
-                    Log.i(TAG, "separate progress: segment=$segmentIndex frame=$frameStart/$totalFrames")
+                    Log.i(TAG, "separate progress: segment=$segmentIndex/$totalSegments frame=$frameStart/$totalFrames")
                 }
             }
             Log.i(TAG, "separate done: segments=$segmentIndex")
