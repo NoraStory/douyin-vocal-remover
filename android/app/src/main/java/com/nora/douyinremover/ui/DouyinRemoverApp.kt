@@ -2,6 +2,7 @@ package com.nora.douyinremover.ui
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.webkit.WebView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
@@ -41,11 +42,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Login
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
@@ -68,6 +71,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -96,7 +100,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nora.douyinremover.douyin.DouyinWebSession
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
@@ -136,7 +144,10 @@ fun DouyinRemoverApp(viewModel: AppViewModel) {
         onResolve = viewModel::resolve,
         onSelectItem = viewModel::selectItem,
         onProcess = viewModel::processSelected,
-        onUpdateSettings = viewModel::updateSettings
+        onUpdateSettings = viewModel::updateSettings,
+        onOpenLogin = viewModel::openVerification,
+        onVerificationCompleted = viewModel::onVerificationCompleted,
+        onVerificationCancelled = viewModel::onVerificationCancelled
     )
 }
 
@@ -149,7 +160,10 @@ private fun DouyinRemoverContent(
     onResolve: () -> Unit,
     onSelectItem: (ResolvedMediaItem) -> Unit,
     onProcess: () -> Unit,
-    onUpdateSettings: (ProcessingSettings) -> Unit
+    onUpdateSettings: (ProcessingSettings) -> Unit,
+    onOpenLogin: () -> Unit,
+    onVerificationCompleted: (Map<String, String>) -> Unit,
+    onVerificationCancelled: () -> Unit
 ) {
     var showOptions by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -176,6 +190,8 @@ private fun DouyinRemoverContent(
             item {
                 HeaderSection(
                     onOpenOptions = { showOptions = true },
+                    onOpenLogin = onOpenLogin,
+                    isLoggedIn = uiState.isLoggedIn,
                     formatLabel = settings.outputFormat.label()
                 )
             }
@@ -268,13 +284,25 @@ private fun DouyinRemoverContent(
             )
         }
     }
+
+    if (uiState.showVerification) {
+        VerificationDialog(
+            onCompleted = onVerificationCompleted,
+            onDismiss = onVerificationCancelled
+        )
+    }
 }
 
 /**
- * 页头：标题 + 副标题左对齐，设置按钮右上角；格式 Chip 与标题基线对齐。
+ * 页头：标题 + 副标题左对齐，设置按钮右上角；格式 Chip 与登录态 Chip 与标题基线对齐。
  */
 @Composable
-private fun HeaderSection(onOpenOptions: () -> Unit, formatLabel: String) {
+private fun HeaderSection(
+    onOpenOptions: () -> Unit,
+    onOpenLogin: () -> Unit,
+    isLoggedIn: Boolean,
+    formatLabel: String
+) {
     Column {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -323,6 +351,31 @@ private fun HeaderSection(onOpenOptions: () -> Unit, formatLabel: String) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                border = null
+            )
+            AssistChip(
+                onClick = onOpenLogin,
+                label = {
+                    Text(
+                        if (isLoggedIn) "已登录抖音" else "未登录 · 点此登录",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        if (isLoggedIn) Icons.Filled.Check else Icons.Outlined.Login,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = if (isLoggedIn) MaterialTheme.colorScheme.secondaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    labelColor = if (isLoggedIn) MaterialTheme.colorScheme.onSecondaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    leadingIconContentColor = if (isLoggedIn) MaterialTheme.colorScheme.onSecondaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 ),
                 border = null
             )
@@ -1011,4 +1064,113 @@ private fun AudioOutputFormat.label(): String = when (this) {
     AudioOutputFormat.MP3_128 -> "MP3 128k"
     AudioOutputFormat.WAV -> "WAV"
     AudioOutputFormat.FLAC -> "FLAC"
+}
+
+/**
+ * 抖音验证/登录弹窗：内嵌 WebView 加载抖音页面。
+ * 用户手动完成滑块验证码或扫码/账密登录后，点击「已完成」收集 cookie（含 UIFID_TEMP、
+ * session 系登录态字段），合并进 cookie 存储并自动重试解析。
+ * 这是风控恢复的唯一可靠手段（48tools / dyparse 同款做法）。
+ */
+@Composable
+private fun VerificationDialog(
+    onCompleted: (Map<String, String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val webView = remember {
+        WebView(context).apply {
+            // 验证/登录页需要显示图片（二维码），不禁用图片加载
+            DouyinWebSession.configure(this, blockImages = false)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (webView.url == null) {
+            webView.loadUrl("https://www.douyin.com/")
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+            ) {
+                // 标题栏
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Spacing.cardP, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "抖音验证 / 登录",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            "在页面中完成滑块验证或登录，然后点击下方按钮",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "关闭",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // WebView 主体
+                AndroidView(
+                    factory = { webView },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+
+                // 底部操作
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = Spacing.cardP, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text("取消", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Button(
+                        onClick = {
+                            val cookies = DouyinWebSession.collectCookies()
+                            onCompleted(cookies)
+                        },
+                        modifier = Modifier.weight(2f).height(48.dp),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            "已完成验证 / 登录",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

@@ -33,8 +33,26 @@ class DouyinApi(
     private val json = Json { ignoreUnknownKeys = true }
     private val signatureEngine = JsSignatureEngine(context)
     private val cookieStore = DouyinCookieStore(context)
+    private val webSession = DouyinWebSession(context)
 
     suspend fun resolve(input: String): List<ResolvedMediaItem> = withContext(Dispatchers.IO) {
+        // 匿名会话 cookie 过期且未登录时，先用隐形 WebView 预热（dyparse 方案）。
+        // 注意顺序：必须在 ensureBaseCookies 之前检查，否则注册 ttwid 会刷新 savedAt
+        // 时间戳，把“过期”状态掩盖掉，预热成为死代码。
+        // 预热是尽力而为：WebView provider 异常（模拟器常见）时静默降级，不阻断解析。
+        if (cookieStore.isStale() && !cookieStore.isLoggedIn()) {
+            Log.i(TAG, "cookies stale, warming up via WebView")
+            val warmed = runCatching { webSession.warmUp() }
+                .onFailure { Log.w(TAG, "warmUp failed: ${it.message}") }
+                .getOrDefault(emptyMap())
+            if (warmed.isNotEmpty()) {
+                cookieStore.mergeFiltered(warmed)
+            } else {
+                // 预热失败也刷新时间戳，避免每次解析都卡 25 秒预热
+                cookieStore.save(cookieStore.load())
+            }
+        }
+
         ensureBaseCookies()
 
         // 解析分享文本/链接；短链（v.douyin.com）会被解析成 VIDEO + 原始短链 URL
@@ -53,6 +71,18 @@ class DouyinApi(
             DouyinTargetType.USER -> resolveUserWithRetry(target)
         }
     }
+
+    /** 用户在 WebView 中完成验证码/登录后调用：合并收集到的 cookie */
+    suspend fun applyWebSessionCookies(cookies: Map<String, String>) {
+        withContext(Dispatchers.IO) {
+            if (cookies.isNotEmpty()) {
+                cookieStore.mergeFiltered(cookies)
+                Log.i(TAG, "applied web session cookies: ${cookies.size} keys, loggedIn=${cookieStore.isLoggedIn()}")
+            }
+        }
+    }
+
+    suspend fun isLoggedIn(): Boolean = withContext(Dispatchers.IO) { cookieStore.isLoggedIn() }
 
     suspend fun download(url: String, headers: Map<String, String>): ByteArray = withContext(Dispatchers.IO) {
         val builder = Request.Builder().url(url).header("Referer", "https://www.douyin.com/")
@@ -122,7 +152,7 @@ class DouyinApi(
         Log.i(TAG, "registerTtwid done, cookie=${cookieStore.load().take(80)}")
     }
 
-    /* ---------- 视频解析（接口优先 → 签名重试 → HTML 兜底） ---------- */
+    /* ---------- 视频解析（接口优先 → 签名重试 → 风控抛错） ---------- */
 
     private suspend fun resolveVideoWithRetry(target: ParsedDouyinTarget): List<ResolvedMediaItem> {
         if (target.type == DouyinTargetType.NOTE || !target.id.matches(Regex("^[0-9]+$"))) {
@@ -138,9 +168,9 @@ class DouyinApi(
         val second = runCatching { resolveDetail(target, cookieStore.load()) }.getOrNull()
         if (!second.isNullOrEmpty()) return second
 
-        // 第三次：解析页面 HTML 里的 RENDER_DATA
-        Log.i(TAG, "detail second attempt failed, falling back to page HTML")
-        return resolveFromPageHtml("https://www.douyin.com/video/${target.id}")
+        // 两次都被风控拦截：IP 维度限流无法靠换 cookie 绕过，需要用户在 WebView 中完成验证码/登录
+        Log.w(TAG, "detail blocked twice, need user verification")
+        throw NeedVerificationException("触发抖音风控，请完成验证码或登录")
     }
 
     private suspend fun resolveUserWithRetry(target: ParsedDouyinTarget): List<ResolvedMediaItem> {
@@ -154,9 +184,8 @@ class DouyinApi(
         val second = runCatching { resolveUser(target, cookieStore.load()) }.getOrNull()
         if (!second.isNullOrEmpty()) return second
 
-        // 第三次：页面 HTML 兜底
-        Log.i(TAG, "post second attempt failed, falling back to page HTML")
-        return resolveFromPageHtml("https://www.douyin.com/user/${target.id}")
+        Log.w(TAG, "post blocked twice, need user verification")
+        throw NeedVerificationException("触发抖音风控，请完成验证码或登录")
     }
 
     /**

@@ -8,6 +8,7 @@ import com.nora.douyinremover.audio.FfmpegMediaEncoder
 import com.nora.douyinremover.audio.OnnxDemucsSeparator
 import com.nora.douyinremover.audio.SeparationRequest
 import com.nora.douyinremover.douyin.DouyinApi
+import com.nora.douyinremover.douyin.NeedVerificationException
 import com.nora.douyinremover.douyin.ResolvedMediaItem
 import com.nora.douyinremover.settings.AudioOutputFormat
 import com.nora.douyinremover.settings.ProcessingSettings
@@ -29,7 +30,9 @@ data class AppUiState(
     val isProcessing: Boolean = false,
     val progressText: String = "",
     val outputPath: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val showVerification: Boolean = false,
+    val isLoggedIn: Boolean = false
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -46,6 +49,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
+
+    init {
+        // 登录态刷新：无感后台预热（dyparse 方案）——启动 1.5s 后静默访问抖音首页，
+        // 拿到匿名会话 cookie 并持久化 24h，降低首次解析触发风控的概率。
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1_500)
+            runCatching { douyinApi.isLoggedIn() }
+                .onSuccess { loggedIn -> _uiState.update { it.copy(isLoggedIn = loggedIn) } }
+        }
+    }
 
     fun updateInput(value: String) {
         _uiState.update { it.copy(input = value, error = null) }
@@ -81,9 +94,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure { error ->
-                    _uiState.update { it.copy(isResolving = false, error = error.message ?: "解析失败") }
+                    if (error is NeedVerificationException) {
+                        // 风控：弹出验证/登录窗口，完成后自动重试
+                        _uiState.update {
+                            it.copy(
+                                isResolving = false,
+                                showVerification = true,
+                                error = error.message
+                            )
+                        }
+                    } else {
+                        _uiState.update { it.copy(isResolving = false, error = error.message ?: "解析失败") }
+                    }
                 }
         }
+    }
+
+    /** 用户在 WebView 中完成验证码/登录后调用：合并 cookie、收起弹窗并自动重试解析 */
+    fun onVerificationCompleted(cookies: Map<String, String>) {
+        viewModelScope.launch {
+            runCatching { douyinApi.applyWebSessionCookies(cookies) }
+            val loggedIn = runCatching { douyinApi.isLoggedIn() }.getOrDefault(false)
+            _uiState.update { it.copy(showVerification = false, isLoggedIn = loggedIn) }
+            // 自动重试刚才的解析
+            if (_uiState.value.input.isNotBlank()) {
+                resolve()
+            }
+        }
+    }
+
+    fun onVerificationCancelled() {
+        _uiState.update { it.copy(showVerification = false) }
+    }
+
+    /** 主动打开验证/登录窗口（页头登录状态入口） */
+    fun openVerification() {
+        _uiState.update { it.copy(showVerification = true, error = null) }
     }
 
     fun processSelected() {
