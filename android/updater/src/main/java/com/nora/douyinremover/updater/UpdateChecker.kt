@@ -50,13 +50,26 @@ class UpdateChecker(
         checkGitee() ?: checkGithub()
     }
 
-    /** 拉取模型资产列表（从最新 release 的 assets 中筛选 .onnx） */
+    /** 拉取模型资产列表（从最新 release 的 assets 中筛选模型文件） */
     suspend fun fetchModelAssets(): List<ModelAsset> = withContext(Dispatchers.IO) {
+        val errors = mutableListOf<String>()
         val giteeBody = if (giteeConfigured()) {
-            runCatching { fetchJson(giteeLatestUrl()) }.getOrNull()
+            runCatching { fetchJson(giteeLatestUrl()) }
+                .onFailure { errors.add("gitee: ${it.message}") }
+                .getOrNull()
         } else null
-        val githubBody = runCatching { fetchJson(githubLatestUrl()) }.getOrNull()
-        fetchReleaseAssets(giteeBody, githubBody)
+        val githubBody = runCatching { fetchJson(githubLatestUrl()) }
+            .onFailure { errors.add("github: ${it.message}") }
+            .getOrNull()
+
+        fetchReleaseAssets(giteeBody, githubBody).ifEmpty {
+            // 双源都拿不到模型资产时，抛出带原因的异常（而不是静默返回空列表），
+            // 让用户看到"为什么失败"而不是误导性的"没有资产"
+            throw IllegalStateException(
+                if (errors.isEmpty()) "Release 中没有找到模型资产"
+                else "模型资产获取失败（${errors.joinToString("; ")}）"
+            )
+        }
     }
 
     // ---- Gitee ----

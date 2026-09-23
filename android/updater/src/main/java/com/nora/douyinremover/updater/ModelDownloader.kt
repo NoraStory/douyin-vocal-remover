@@ -19,7 +19,10 @@ import java.security.MessageDigest
 class ModelDownloader {
     /**
      * 下载模型到 modelsDir。
-     * @param asset 模型资产（文件名/URL/大小）
+     * @param asset 模型资产（文件名/URL/大小）。Gitee 单文件限 100MB，大模型以
+     *   `<name>.onnx.part00/.part01/...` 分卷发布：传入 part00 资产时自动下载
+     *   全部分卷并按序合并成 `<name>.onnx`。
+     * @param allAssets 同一 release 的全部模型资产（用于发现分卷；单文件下载可传空）
      * @param expectedSha256 期望哈希（hex，null 跳过校验）
      * @param onProgress (已下载字节, 总字节)
      * @param isCancelled 取消标志
@@ -28,11 +31,99 @@ class ModelDownloader {
     suspend fun download(
         asset: ModelAsset,
         modelsDir: File,
+        allAssets: List<ModelAsset> = emptyList(),
         expectedSha256: String? = null,
         onProgress: (Long, Long) -> Unit = { _, _ -> },
         isCancelled: () -> Boolean = { false }
     ): File = withContext(Dispatchers.IO) {
         modelsDir.mkdirs()
+
+        // 分卷资产（xxx.onnx.part00）：还原目标名 xxx.onnx，收集同前缀全部分卷
+        val isSplit = asset.fileName.endsWith(".part00") ||
+            Regex("\\.part\\d+$").containsMatchIn(asset.fileName)
+        return@withContext if (isSplit) {
+            val baseName = asset.fileName.substringBeforeLast(".part")
+            val parts = allAssets
+                .filter { it.fileName.startsWith("$baseName.part") }
+                .sortedBy { it.fileName }
+            require(parts.isNotEmpty()) { "分卷资产缺失：${asset.fileName}" }
+            downloadMerged(baseName, parts, modelsDir, expectedSha256, onProgress, isCancelled)
+        } else {
+            downloadSingle(asset, modelsDir, expectedSha256, onProgress, isCancelled)
+        }
+    }
+
+    /** 下载分卷并按序合并为 baseName */
+    private suspend fun downloadMerged(
+        baseName: String,
+        parts: List<ModelAsset>,
+        modelsDir: File,
+        expectedSha256: String?,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean
+    ): File = withContext(Dispatchers.IO) {
+        val target = File(modelsDir, baseName)
+        val totalSize = parts.sumOf { it.size }.takeIf { it > 0 } ?: -1L
+        var downloadedTotal = 0L
+
+        // 已完整存在则跳过
+        if (target.exists() && target.length() > 0 &&
+            (totalSize <= 0 || target.length() == totalSize)
+        ) {
+            Log.i(TAG, "model already present: $baseName")
+            return@withContext target
+        }
+
+        // 各分卷先落到独立 tmp（支持单卷断点续传），全部就绪后合并
+        val partFiles = mutableListOf<File>()
+        try {
+            for (part in parts) {
+                if (isCancelled()) throw DownloadCancelledException()
+                val partFile = downloadSingle(part, modelsDir, expectedSha256 = null,
+                    onProgress = { done, _ ->
+                        onProgress(downloadedTotal + done, totalSize)
+                    },
+                    isCancelled = isCancelled)
+                partFiles.add(partFile)
+                downloadedTotal += partFile.length()
+            }
+
+            // 合并：顺序拼接进最终 tmp，再原子 rename
+            val mergedTmp = File(modelsDir, "$baseName.tmp")
+            java.io.FileOutputStream(mergedTmp).use { out ->
+                for (pf in partFiles) {
+                    pf.inputStream().use { it.copyTo(out, 256 * 1024) }
+                }
+            }
+            if (expectedSha256 != null) {
+                val actual = sha256Of(mergedTmp)
+                require(actual.equals(expectedSha256, ignoreCase = true)) {
+                    "SHA-256 mismatch for $baseName"
+                }
+            }
+            if (target.exists()) target.delete()
+            if (!mergedTmp.renameTo(target)) {
+                mergedTmp.copyTo(target, overwrite = true)
+                mergedTmp.delete()
+            }
+            // 清理分卷
+            partFiles.forEach { it.delete() }
+            onProgress(target.length(), target.length())
+            target
+        } finally {
+            // 合并失败时也清理已下载分卷（下次重来）
+            if (!target.exists()) partFiles.forEach { runCatching { it.delete() } }
+        }
+    }
+
+    /** 单文件下载（断点续传 + 重试 + SHA-256） */
+    private suspend fun downloadSingle(
+        asset: ModelAsset,
+        modelsDir: File,
+        expectedSha256: String?,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean
+    ): File = withContext(Dispatchers.IO) {
         val target = File(modelsDir, asset.fileName)
         if (target.exists() && target.length() == asset.size && asset.size > 0) {
             Log.i(TAG, "model already present: ${asset.fileName}")
