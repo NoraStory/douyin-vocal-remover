@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.nora.douyinremover.ProcessingForegroundService
 import com.nora.douyinremover.audio.AudioProcessor
 import com.nora.douyinremover.audio.FfmpegMediaEncoder
 import com.nora.douyinremover.audio.NoAudioTrackException
@@ -159,6 +160,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val item = _uiState.value.selectedItem ?: return
         val currentSettings = settings.value
         viewModelScope.launch {
+            // 前台服务保活：vivo OriginOS 等系统会在切后台/息屏后冻结进程，
+            // 推理线程停摆表现为"卡住"。处理期间挂常驻通知防止冻结。
+            ProcessingForegroundService.start(context)
             _uiState.update {
                 it.copy(
                     isProcessing = true,
@@ -193,6 +197,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
+            ProcessingForegroundService.stop(context)
         }
     }
 

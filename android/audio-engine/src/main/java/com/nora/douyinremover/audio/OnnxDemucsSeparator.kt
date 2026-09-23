@@ -22,8 +22,7 @@ import java.util.Collections
 class OnnxDemucsSeparator(
     private val context: Context,
     private val modelAssetPath: String = "models/htdemucs_fp32.onnx",
-    private val fp16ModelAssetPath: String = "models/htdemucs_fp16.onnx",
-    private val useNnapi: Boolean = true
+    private val fp16ModelAssetPath: String = "models/htdemucs_fp16.onnx"
 ) : AudioSeparator {
     private val ortEnvironment: OrtEnvironment by lazy {
         Log.i(TAG, "initializing OrtEnvironment")
@@ -32,12 +31,14 @@ class OnnxDemucsSeparator(
 
     private val isLowMemoryDevice: Boolean by lazy {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-        val memClass = activityManager.memoryClass // 应用可用堆，MB
         val memInfo = android.app.ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
         val totalMem = (memInfo.totalMem / (1024 * 1024)).toInt()
-        val low = isEmulator || totalMem < 4000 || memClass < 192
-        Log.i(TAG, "device: emulator=$isEmulator totalMemMB=$totalMem memClassMB=$memClass lowMemory=$low")
+        // 只看真实 RAM。memoryClass 是 Java 堆上限（几十到几百 MB），
+        // 与推理用的原生内存无关——16GB 旗舰机 memClass 也常低于 192MB，
+        // 之前用它判定会把大内存真机误判成低内存，走 fp16+2 线程的慢速路径。
+        val low = isEmulator || totalMem < 4000
+        Log.i(TAG, "device: emulator=$isEmulator totalMemMB=$totalMem lowMemory=$low")
         low
     }
 
@@ -78,16 +79,16 @@ class OnnxDemucsSeparator(
         Log.i(TAG, "creating OrtSession model=$activeModelAsset lowMemory=$isLowMemoryDevice")
         val options = OrtSession.SessionOptions().apply {
             // NNAPI 会把整份模型复制进驱动内存（fp32 模型在 2GB 设备上直接触发系统 OOM），
-            // 模拟器/低内存设备回退 CPU EP；NNAPI 只在内存充裕的真机上启用。
-            if (useNnapi && !isLowMemoryDevice) {
-                runCatching { addNnapi() }
-            }
-            // 限制 CPU 线程数：默认按核数开线程，每个线程都有 arena 开销
-            runCatching { setIntraOpNumThreads(if (isLowMemoryDevice) 2 else 4) }
+            // 且本模型 92 个卷积里 80 个是 1D 卷积（Demucs 为时域模型），
+            // NNAPI/XNNPACK 只加速 2D 卷积，绝大多数算子仍回退 CPU，反而引入分区拷贝开销。
+            // 实测结论：全部走 ORT CPU EP 是该模型的最优解，不做 EP 切换。
+            // 限制 CPU 线程数：默认按核数开线程，每个线程都有 arena 开销；
+            // 大小核手机上 4 线程已能占满超大核+大核，再多反而互相抢占。
+            runCatching { setIntraOpNumThreads(4) }
             // ALL_OPT 的整图优化在 x86 模拟器上对 fp16 大模型会卡死（数分钟无进展），
-            // 低内存设备降为基本优化；真机保持 ALL_OPT。
+            // 模拟器降为基本优化；真机保持 ALL_OPT。
             setOptimizationLevel(
-                if (isLowMemoryDevice) OrtSession.SessionOptions.OptLevel.BASIC_OPT
+                if (isEmulator) OrtSession.SessionOptions.OptLevel.BASIC_OPT
                 else OrtSession.SessionOptions.OptLevel.ALL_OPT
             )
         }
