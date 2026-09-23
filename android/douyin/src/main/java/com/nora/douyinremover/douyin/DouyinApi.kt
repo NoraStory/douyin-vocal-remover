@@ -14,8 +14,10 @@ import java.io.IOException
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
 
 /**
  * 抖音解析，流程参考 48tools（github.com/duan602728596/48tools）：
@@ -152,39 +154,60 @@ class DouyinApi(
         Log.i(TAG, "registerTtwid done, cookie=${cookieStore.load().take(80)}")
     }
 
-    /* ---------- 视频解析（接口优先 → 签名重试 → 风控抛错） ---------- */
+    /* ---------- 视频解析（主通道 → 签名刷新 → aid 降级 → 退避重试 → 弹窗） ---------- */
 
     private suspend fun resolveVideoWithRetry(target: ParsedDouyinTarget): List<ResolvedMediaItem> {
         if (target.type == DouyinTargetType.NOTE || !target.id.matches(Regex("^[0-9]+$"))) {
             return emptyList()
         }
-        // 第一次：直接调接口
-        val first = runCatching { resolveDetail(target, cookieStore.load()) }.getOrNull()
-        if (!first.isNullOrEmpty()) return first
+        val id = target.id
+        val cookie = cookieStore.load()
 
-        // 第二次：请求视频页拿 __ac_nonce，本地计算 __ac_signature 后重试
-        Log.i(TAG, "detail first attempt failed, acquiring __ac_signature")
-        acquireAcSignature("https://www.douyin.com/video/${target.id}")
-        val second = runCatching { resolveDetail(target, cookieStore.load()) }.getOrNull()
-        if (!second.isNullOrEmpty()) return second
+        // 尝试链：aid=6383 → 刷新 __ac_signature 后 6383 → aid=1128（图文被过滤但视频可下）
+        val chain = listOf<suspend () -> List<ResolvedMediaItem>>(
+            { attemptDetail(id, "6383", cookie) },
+            {
+                acquireAcSignature("https://www.douyin.com/video/$id")
+                attemptDetail(id, "6383", cookieStore.load())
+            },
+            { attemptDetail(id, "1128", cookieStore.load()) },
+        )
+        for (attempt in chain) {
+            val items = runCatching { attempt() }.getOrNull()
+            if (!items.isNullOrEmpty()) return items
+        }
 
-        // 两次都被风控拦截：IP 维度限流无法靠换 cookie 绕过，需要用户在 WebView 中完成验证码/登录
-        Log.w(TAG, "detail blocked twice, need user verification")
+        // 非 Argus 的瞬时限速：1/2/5 秒退避重试主通道（jiji262 实测冷却后恢复）
+        for (waitMs in longArrayOf(1_000, 2_000, 5_000)) {
+            delay(waitMs)
+            val items = runCatching { attemptDetail(id, "6383", cookieStore.load()) }.getOrNull()
+            if (!items.isNullOrEmpty()) return items
+        }
+
+        Log.w(TAG, "detail blocked by all channels, need user verification")
         throw NeedVerificationException("触发抖音风控，请完成验证码或登录")
     }
 
     private suspend fun resolveUserWithRetry(target: ParsedDouyinTarget): List<ResolvedMediaItem> {
-        // 第一次：直接调接口
-        val first = runCatching { resolveUser(target, cookieStore.load()) }.getOrNull()
-        if (!first.isNullOrEmpty()) return first
-
-        // 第二次：签名重试
-        Log.i(TAG, "post first attempt failed, acquiring __ac_signature")
-        acquireAcSignature("https://www.douyin.com/user/${target.id}")
-        val second = runCatching { resolveUser(target, cookieStore.load()) }.getOrNull()
-        if (!second.isNullOrEmpty()) return second
-
-        Log.w(TAG, "post blocked twice, need user verification")
+        val cookie = cookieStore.load()
+        val chain = listOf<suspend () -> List<ResolvedMediaItem>>(
+            { attemptUser(target, "6383", cookie) },
+            {
+                acquireAcSignature("https://www.douyin.com/user/${target.id}")
+                attemptUser(target, "6383", cookieStore.load())
+            },
+            { attemptUser(target, "1128", cookieStore.load()) },
+        )
+        for (attempt in chain) {
+            val items = runCatching { attempt() }.getOrNull()
+            if (!items.isNullOrEmpty()) return items
+        }
+        for (waitMs in longArrayOf(1_000, 2_000, 5_000)) {
+            delay(waitMs)
+            val items = runCatching { attemptUser(target, "6383", cookieStore.load()) }.getOrNull()
+            if (!items.isNullOrEmpty()) return items
+        }
+        Log.w(TAG, "post blocked by all channels, need user verification")
         throw NeedVerificationException("触发抖音风控，请完成验证码或登录")
     }
 
@@ -232,29 +255,29 @@ class DouyinApi(
 
     /* ---------- API 请求 ---------- */
 
-    private suspend fun resolveDetail(target: ParsedDouyinTarget, cookie: String): List<ResolvedMediaItem> {
-        val query = signedDetailQuery(target.id)
-        val url = "https://www.douyin.com/aweme/v1/web/aweme/detail/?$query"
+    private suspend fun attemptDetail(id: String, aid: String, cookie: String): List<ResolvedMediaItem> {
+        val signed = signedDetailRequest(id, aid, cookie)
         val response = executeJson<AwemeDetailResponse>(
-            url,
+            signed.url,
             cookie,
-            "https://www.douyin.com/video/${target.id}"
+            "https://www.douyin.com/video/$id",
+            signed.extraHeaders
         )
         val item = response.awemeDetail
-        Log.i(TAG, "resolveDetail id=${target.id} found=${item != null} bitRates=${item?.video?.bitRate?.size ?: 0}")
+        Log.i(TAG, "attemptDetail aid=$aid id=$id found=${item != null} bitRates=${item?.video?.bitRate?.size ?: 0}")
         if (item != null) return mapAwemeItem(item)
         return emptyList()
     }
 
-    private suspend fun resolveUser(target: ParsedDouyinTarget, cookie: String): List<ResolvedMediaItem> {
-        val query = signedPostQuery(target.id, System.currentTimeMillis())
-        val url = "https://www.douyin.com/aweme/v1/web/aweme/post/?$query"
+    private suspend fun attemptUser(target: ParsedDouyinTarget, aid: String, cookie: String): List<ResolvedMediaItem> {
+        val signed = signedPostRequest(target.id, aid, System.currentTimeMillis(), cookie)
         val response = executeJson<AwemePostResponse>(
-            url,
+            signed.url,
             cookie,
-            "https://www.douyin.com/user/${target.id}"
+            "https://www.douyin.com/user/${target.id}",
+            signed.extraHeaders
         )
-        Log.i(TAG, "resolveUser id=${target.id} items=${response.awemeList.size} hasMore=${response.hasMore}")
+        Log.i(TAG, "attemptUser aid=$aid id=${target.id} items=${response.awemeList.size} hasMore=${response.hasMore}")
         return response.awemeList.flatMap(::mapAwemeItem)
     }
 
@@ -338,32 +361,164 @@ class DouyinApi(
 
     /* ---------- 签名与工具 ---------- */
 
-    private suspend fun signedDetailQuery(id: String): String {
-        val params = "aid=6383&aweme_id=$id&cookie_enabled=true&platform=PC"
-        val bogus = signatureEngine.aBogus(params, "", USER_AGENT_2)
-        return "$params&a_bogus=${urlEncode(bogus)}"
+    /* ---------- 签名与请求构建（指纹参数 + a_bogus + x-secsdk-web-signature） ---------- */
+
+    private data class SignedRequest(
+        val url: String,
+        val extraHeaders: Map<String, String>
+    )
+
+    /**
+     * 构建 detail 请求：完整浏览器指纹参数 + msToken + verifyFp/fp + a_bogus，
+     * 若 cookie 中有 UIFID 系字段再叠加 x-secsdk-web-signature（Argus 门禁签名）。
+     * 参考 Evil0ctal/Douyin_TikTok_Download_API 与 NanmiCoder/MediaCrawler 的 2026-09 修复。
+     */
+    private suspend fun signedDetailRequest(id: String, aid: String, cookie: String): SignedRequest {
+        val pairs = basePairs(aid)
+        pairs["aweme_id"] = id
+        return buildSignedRequest(pairs, cookie, "https://www.douyin.com/aweme/v1/web/aweme/detail/")
     }
 
-    private suspend fun signedPostQuery(secUserId: String, maxCursor: Long): String {
-        val params = "aid=6383&sec_user_id=${urlEncode(secUserId)}&max_cursor=$maxCursor&count=18&cookie_enabled=true&platform=PC"
-        val bogus = signatureEngine.aBogus(params, "", USER_AGENT_2)
-        return "$params&a_bogus=${urlEncode(bogus)}"
+    private suspend fun signedPostRequest(secUserId: String, aid: String, maxCursor: Long, cookie: String): SignedRequest {
+        val pairs = basePairs(aid)
+        pairs["sec_user_id"] = secUserId
+        pairs["max_cursor"] = maxCursor.toString()
+        pairs["count"] = "18"
+        return buildSignedRequest(pairs, cookie, "https://www.douyin.com/aweme/v1/web/aweme/post/")
     }
 
-    private suspend inline fun <reified T> executeJson(url: String, cookie: String, referer: String): T {
-        val request = Request.Builder()
+    /** 指纹参数集：与请求 UA（Chrome 130 / Windows）保持一致，否则是免费的风控信号 */
+    private fun basePairs(aid: String): LinkedHashMap<String, String> = linkedMapOf(
+        "device_platform" to "webapp",
+        "aid" to aid,
+        "channel" to "channel_pc_web",
+        "pc_client_type" to "1",
+        "version_code" to "290100",
+        "version_name" to "29.1.0",
+        "cookie_enabled" to "true",
+        "screen_width" to "1920",
+        "screen_height" to "1080",
+        "browser_language" to "zh-CN",
+        "browser_platform" to "Win32",
+        "browser_name" to "Chrome",
+        "browser_version" to "130.0.0.0",
+        "browser_online" to "true",
+        "engine_name" to "Blink",
+        "engine_version" to "130.0.0.0",
+        "os_name" to "Windows",
+        "os_version" to "10",
+        "cpu_core_num" to "12",
+        "device_memory" to "8",
+        "platform" to "PC",
+        "downlink" to "10",
+        "effective_type" to "4g",
+        "round_trip_time" to "0"
+    )
+
+    private fun cookieMap(cookie: String): Map<String, String> =
+        cookie.split(';').mapNotNull { part ->
+            part.trim().split('=', limit = 2).takeIf { it.size == 2 }
+                ?.let { it[0].trim() to it[1].trim() }
+        }.toMap()
+
+    private suspend fun buildSignedRequest(
+        pairs: LinkedHashMap<String, String>,
+        cookie: String,
+        endpoint: String
+    ): SignedRequest {
+        val cookies = cookieMap(cookie)
+
+        // msToken：真实流程经 webmssdk 获取；失败时假 token 同样可用（f2 的做法）
+        pairs["msToken"] = cookies["msToken"] ?: randomMsToken()
+
+        // verifyFp / fp 必须同源且来自 s_v_web_id cookie（自造会被判 Signature Not Found）
+        val webId = cookies["s_v_web_id"]
+        if (!webId.isNullOrBlank()) {
+            pairs["verifyFp"] = webId
+            pairs["fp"] = webId
+        }
+
+        // a_bogus：输入是编码后的查询串（不含 a_bogus）
+        val bogusInput = encodePairs(pairs)
+        val bogus = signatureEngine.aBogus(bogusInput, "", USER_AGENT_2)
+        pairs["a_bogus"] = bogus
+
+        // x-secsdk-web-signature：md5(f"{uifid}_{timestamp}_{SALT}_{query}")
+        // 仅在拿到 UIFID 系 cookie 时可用（WebView 预热/验证后通常会有 UIFID_TEMP）
+        val uifid = UIFID_COOKIE_NAMES.firstNotNullOfOrNull { cookies[it] }
+        val headers = LinkedHashMap<String, String>()
+        // MediaCrawler 2026-09-19 修复：Argus 前置校验要求该头存在；网关暂不校验值
+        headers["x-tt-argus"] = "1"
+        if (!uifid.isNullOrBlank()) {
+            val covered = LinkedHashMap(pairs)
+            if (!covered.containsKey("uifid")) covered["uifid"] = uifid
+            val stamp = (System.currentTimeMillis() / 1000).toString()
+            covered["timestamp"] = stamp
+            val query = encodePairs(covered)
+            val signature = md5("${uifid}_${stamp}_${SALT}_${query}")
+            headers["uifid"] = uifid
+            headers["x-secsdk-web-signature"] = signature
+            headers["x-secsdk-web-expire"] = stamp
+            Log.i(TAG, "websign applied, uifid=${uifid.take(12)}...")
+            return SignedRequest("$endpoint?$query&x-secsdk-web-signature=$signature", headers)
+        }
+
+        Log.w(TAG, "no uifid cookie, websign skipped (x-tt-argus only)")
+        return SignedRequest("$endpoint?${encodePairs(pairs)}", headers)
+    }
+
+    /** JS URLSearchParams/Python quote(safe='*-._') 语义的百分号编码 */
+    private fun encodePairs(pairs: Map<String, String>): String =
+        pairs.entries.joinToString("&") { "${percentEncode(it.key)}=${percentEncode(it.value)}" }
+
+    private fun percentEncode(value: String): String {
+        val sb = StringBuilder(value.length)
+        for (byte in value.toByteArray(Charsets.UTF_8)) {
+            val c = byte.toInt() and 0xFF
+            val isAlphaNum = (c in 'a'.code..'z'.code) || (c in 'A'.code..'Z'.code) || (c in '0'.code..'9'.code)
+            if (isAlphaNum || c == '*'.code || c == '-'.code || c == '.'.code || c == '_'.code || c == '~'.code) {
+                sb.append(c.toChar())
+            } else {
+                sb.append('%')
+                sb.append(HEX_DIGITS[c shr 4])
+                sb.append(HEX_DIGITS[c and 0xF])
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun md5(input: String): String =
+        MessageDigest.getInstance("MD5")
+            .digest(input.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    private fun randomMsToken(): String {
+        val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        val random = SecureRandom()
+        val sb = StringBuilder(128)
+        repeat(128) { sb.append(chars[random.nextInt(chars.length)]) }
+        return sb.toString()
+    }
+
+    private suspend inline fun <reified T> executeJson(
+        url: String,
+        cookie: String,
+        referer: String,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): T {
+        val builder = Request.Builder()
             .url(url)
             .header("Referer", referer)
             .header("Accept", "application/json, text/plain, */*")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
             .header("User-Agent", USER_AGENT_2)
             .header("Cookie", cookie)
-            .build()
-        val body = client.newCall(request).execute().use { response ->
+        extraHeaders.forEach { (name, value) -> builder.header(name, value) }
+        val body = client.newCall(builder.build()).execute().use { response ->
             val text = response.body?.string().orEmpty()
             Log.i(TAG, "executeJson ${response.code} ${url.substringBefore('?')} bodyLen=${text.length}")
-            if (!response.isSuccessful) throw IOException("接口请求失败: ${response.code}")
-            if (text.isBlank()) throw IOException("接口响应为空（可能被风控拦截）")
+            if (!response.isSuccessful) throw ApiBlockedException(response.code, text)
+            if (text.isBlank()) throw ApiBlockedException(response.code, "")
             text
         }
         return try {
@@ -404,9 +559,21 @@ class DouyinApi(
 
     private companion object {
         const val TAG = "DouyinApi"
+        /** 与指纹参数集（Chrome 130 / Windows）保持一致 */
         const val USER_AGENT_2 =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0"
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+        /**
+         * x-secsdk-web-signature 的项目盐（douyin_web，project-id=34）。
+         * 签名为协议兼容要求（服务端只校验 MD5），非完整性保护用途。
+         */
+        const val SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"
+
+        /** SDK 接受的访客 ID cookie 拼写顺序 */
+        val UIFID_COOKIE_NAMES = listOf("uifid", "uifid_temp", "UIFID", "UIFID_TEMP", "UIFIDTEMP")
+
+        val HEX_DIGITS = "0123456789ABCDEF".toCharArray()
 
         fun createDefaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
@@ -416,3 +583,9 @@ class DouyinApi(
             .build()
     }
 }
+
+/**
+ * 请求被抖音边缘网关拦截（403 ArgusSecurityPlugin / 限速 / 空响应）。
+ * statusCode + body 供上层分类：Argus 拒绝（签名门禁）与瞬时限速需要不同策略。
+ */
+class ApiBlockedException(val statusCode: Int, val body: String) : IOException("接口被拦截: $statusCode")

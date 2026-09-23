@@ -74,7 +74,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resolve() {
+    fun resolve(fromVerification: Boolean = false) {
         val input = _uiState.value.input.trim()
         if (input.isBlank()) {
             _uiState.update { it.copy(error = "请输入抖音链接、视频 ID 或用户 ID") }
@@ -94,13 +94,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure { error ->
-                    if (error is NeedVerificationException) {
+                    if (error is NeedVerificationException && !fromVerification) {
                         // 风控：弹出验证/登录窗口，完成后自动重试
                         _uiState.update {
                             it.copy(
                                 isResolving = false,
                                 showVerification = true,
                                 error = error.message
+                            )
+                        }
+                    } else if (error is NeedVerificationException && fromVerification) {
+                        // 已完成验证/登录但仍被拦：多半是 IP 被限流，冷却中；
+                        // 不再重复弹窗，给出明确指引避免死循环
+                        _uiState.update {
+                            it.copy(
+                                isResolving = false,
+                                showVerification = false,
+                                error = "验证后仍被风控拦截，可能触发了 IP 限流：请稍后重试、切换网络（Wi-Fi/流量）或更换 IP 后再解析"
                             )
                         }
                     } else {
@@ -116,9 +126,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { douyinApi.applyWebSessionCookies(cookies) }
             val loggedIn = runCatching { douyinApi.isLoggedIn() }.getOrDefault(false)
             _uiState.update { it.copy(showVerification = false, isLoggedIn = loggedIn) }
-            // 自动重试刚才的解析
+            // 自动重试刚才的解析（验证后仍被拦则不再重复弹窗，给出冷却指引）
             if (_uiState.value.input.isNotBlank()) {
-                resolve()
+                resolve(fromVerification = true)
             }
         }
     }

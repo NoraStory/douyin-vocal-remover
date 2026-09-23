@@ -82,7 +82,7 @@ class DouyinWebSession(private val context: Context) {
         /** 与 DouyinApi.USER_AGENT 保持一致（UA 不一致会导致 cookie 失效） */
         const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0"
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
         /** 预热/验证时判定“已拿到关键 cookie”的字段 */
         val KEY_COOKIE_NAMES = setOf("UIFID_TEMP", "UIFID", "s_v_web_id", "odin_tt")
