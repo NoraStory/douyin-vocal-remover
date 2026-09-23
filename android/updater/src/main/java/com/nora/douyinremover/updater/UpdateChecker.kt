@@ -33,15 +33,21 @@ data class ModelAsset(
 
 /**
  * 双源版本检测：Gitee 优先（国内直连快），失败/超时自动切 GitHub。
- * Release 资产约定：
- *  - APK：douyin-vocal-remover-v{version}.apk
- *  - 模型（仅首个发布上传，后续复用）：htdemucs_fp32.onnx / htdemucs_fp16.onnx
+ *
+ * 检测通道（每源两条，按序尝试）：
+ *  1. 网页版（主通道）：Gitee releases 列表页 HTML 提取 tag；GitHub releases/latest
+ *     直接 302 到 releases/tag/vX.Y.Z，从 Location 头拿版本。网页不限流，最可靠。
+ *  2. API（备选）：Gitee 匿名 API 限流极严（IP 级），GitHub 匿名 60 次/小时，
+ *     仅在网页通道失败时使用。
+ *
+ * APK 下载地址不依赖资产列表：直接拼 releases/download/v{ver}/ 标准直链
+ * （Gitee 分卷 apk 由 ApkDownloader 侧按需处理，此处给 part00 首卷地址）。
  */
 class UpdateChecker(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
-        .followRedirects(true)
+        .followRedirects(false) // 手动处理重定向：GitHub latest 页靠 Location 拿 tag
         .build()
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -81,20 +87,76 @@ class UpdateChecker(
         // 公开仓库匿名可读，不带令牌（令牌编译进 APK 会被反编译提取）
         "https://gitee.com/api/v5/repos/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}/releases/latest"
 
+    private fun giteeReleasesPageUrl(): String =
+        "https://gitee.com/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}/releases"
+
     private fun checkGitee(): UpdateInfo? {
         if (!giteeConfigured()) return null
+        // 主通道：网页版（不限流）
+        checkGiteeWeb()?.let { return it }
+        // 备选：API
         return runCatching { parseLatest(fetchJson(giteeLatestUrl()), source = "gitee") }.getOrNull()
+    }
+
+    /** 从 Gitee releases 列表页 HTML 提取最新 tag（页面按时间倒序，第一个 tag 即最新） */
+    private fun checkGiteeWeb(): UpdateInfo? {
+        return runCatching {
+            val html = fetchText(giteeReleasesPageUrl())
+            val tag = Regex("releases/tag/(v[0-9]+(?:\\.[0-9]+)+)").find(html)?.groupValues?.get(1)
+                ?: return@runCatching null
+            val version = tag.removePrefix("v")
+            UpdateInfo(
+                latestVersion = version,
+                apkUrl = giteeApkDownloadUrl(version),
+                apkSize = -1L,
+                releaseNotes = "",
+                source = "gitee"
+            )
+        }.getOrNull()
+    }
+
+    /** Gitee 标准资产直链（单卷 apk；分卷时取 part00，由下载器合并） */
+    private fun giteeApkDownloadUrl(version: String): String {
+        val base = "https://gitee.com/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}/releases/download/v$version"
+        // Gitee 100MB 限制：APK 可能拆成 .part00/.part01；优先给分卷首卷，
+        // 下载器检测到 part00 后自动合并。若实际是单文件，part00 404 时由上层回退 GitHub。
+        return "$base/douyin-vocal-remover-v$version.apk.part00"
     }
 
     // ---- GitHub ----
 
-    private fun checkGithub(): UpdateInfo? {
-        val url = githubLatestUrl()
-        return runCatching { parseLatest(fetchJson(url), source = "github") }.getOrNull()
-    }
-
     private fun githubLatestUrl(): String =
         "https://api.github.com/repos/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}/releases/latest"
+
+    private fun checkGithub(): UpdateInfo? {
+        // 主通道：releases/latest 302 重定向的 Location 头（不限流）
+        checkGithubWeb()?.let { return it }
+        // 备选：API
+        return runCatching { parseLatest(fetchJson(githubLatestUrl()), source = "github") }.getOrNull()
+    }
+
+    private fun checkGithubWeb(): UpdateInfo? {
+        return runCatching {
+            val request = Request.Builder()
+                .url("https://github.com/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}/releases/latest")
+                .header("User-Agent", "douyin-vocal-remover")
+                .head()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val location = response.header("Location") ?: return@runCatching null
+                val tag = Regex("releases/tag/(v[0-9]+(?:\\.[0-9]+)+)").find(location)?.groupValues?.get(1)
+                    ?: return@runCatching null
+                val version = tag.removePrefix("v")
+                UpdateInfo(
+                    latestVersion = version,
+                    apkUrl = "https://github.com/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}/releases/download/$tag/douyin-vocal-remover-$tag.apk",
+                    apkSize = -1L,
+                    releaseNotes = "",
+                    source = "github"
+                )
+            }.let { it }
+        }.getOrNull()
+    }
 
     // ---- 解析 ----
 
@@ -102,6 +164,18 @@ class UpdateChecker(
         val request = Request.Builder()
             .url(url)
             .header("Accept", "application/json")
+            .header("User-Agent", "douyin-vocal-remover")
+            .build()
+        client.newCall(request).execute().use { response ->
+            require(response.isSuccessful) { "HTTP ${response.code}" }
+            return response.body.string()
+        }
+    }
+
+    private fun fetchText(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) douyin-vocal-remover")
             .build()
         client.newCall(request).execute().use { response ->
             require(response.isSuccessful) { "HTTP ${response.code}" }

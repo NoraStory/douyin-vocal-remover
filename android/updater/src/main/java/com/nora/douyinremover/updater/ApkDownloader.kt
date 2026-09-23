@@ -29,6 +29,80 @@ class ApkDownloader(
         onProgress: (Long, Long) -> Unit = { _, _ -> },
         isCancelled: () -> Boolean = { false }
     ): File = withContext(Dispatchers.IO) {
+        // Gitee 100MB 限制：APK 可能拆成 .part00/.part01 分卷发布。
+        // URL 以 .part00 结尾时：依次下载全部分卷（part00、part01……直到 404），
+        // 按序合并写入 targetFile。分卷较小，无需断点续传。
+        if (url.endsWith(".part00")) {
+            return@withContext downloadSplit(url, targetFile, onProgress, isCancelled)
+        }
+        downloadSingle(url, targetFile, onProgress, isCancelled)
+    }
+
+    /** 分卷 APK：下载 part00..partNN 并合并 */
+    private suspend fun downloadSplit(
+        firstPartUrl: String,
+        targetFile: File,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean
+    ): File = withContext(Dispatchers.IO) {
+        targetFile.parentFile?.mkdirs()
+        val baseUrl = firstPartUrl.removeSuffix(".part00")
+        val mergedTmp = File(targetFile.parentFile, targetFile.name + ".tmp")
+
+        // 探测分卷总数（part00 起，404 即止）
+        val partUrls = mutableListOf(firstPartUrl)
+        var index = 1
+        while (index < 20) { // 上限防御
+            val candidate = "$baseUrl.part%02d".format(index)
+            val exists = runCatching {
+                client.newCall(Request.Builder().url(candidate).head().build()).execute().use { resp ->
+                    resp.isSuccessful
+                }
+            }.getOrDefault(false)
+            if (!exists) break
+            partUrls.add(candidate)
+            index++
+        }
+
+        var downloadedTotal = 0L
+        java.io.FileOutputStream(mergedTmp).use { out ->
+            for (partUrl in partUrls) {
+                if (isCancelled()) throw DownloadCancelledException()
+                client.newCall(Request.Builder().url(partUrl).get().build()).execute().use { response ->
+                    require(response.isSuccessful || response.code == 206) {
+                        "分卷下载失败 HTTP ${response.code}: ${partUrl.substringAfterLast('/')}"
+                    }
+                    response.body.source().use { source ->
+                        val sink = okio.Buffer()
+                        while (true) {
+                            if (isCancelled()) throw DownloadCancelledException()
+                            val read = source.read(sink, 64 * 1024)
+                            if (read == -1L) break
+                            sink.writeTo(out)
+                            downloadedTotal += read
+                            onProgress(downloadedTotal, -1L) // 分卷总量未知，进度按字节显示
+                        }
+                    }
+                }
+            }
+            out.flush()
+            onProgress(downloadedTotal, downloadedTotal)
+        }
+        if (targetFile.exists()) targetFile.delete()
+        if (!mergedTmp.renameTo(targetFile)) {
+            mergedTmp.copyTo(targetFile, overwrite = true)
+            mergedTmp.delete()
+        }
+        targetFile
+    }
+
+    /** 单文件 APK 下载（断点续传） */
+    private suspend fun downloadSingle(
+        url: String,
+        targetFile: File,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean
+    ): File = withContext(Dispatchers.IO) {
         targetFile.parentFile?.mkdirs()
         val tmp = File(targetFile.parentFile, targetFile.name + ".tmp")
         var downloaded = if (tmp.exists()) tmp.length() else 0L
