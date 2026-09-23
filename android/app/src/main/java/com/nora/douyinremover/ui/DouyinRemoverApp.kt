@@ -146,6 +146,7 @@ fun DouyinRemoverApp(viewModel: AppViewModel) {
         onResolve = viewModel::resolve,
         onSelectItem = viewModel::selectItem,
         onProcess = viewModel::processSelected,
+        onDownload = viewModel::downloadSelected,
         onUpdateSettings = viewModel::updateSettings,
         onOpenLogin = viewModel::openVerification,
         onVerificationCompleted = viewModel::onVerificationCompleted,
@@ -162,6 +163,7 @@ private fun DouyinRemoverContent(
     onResolve: () -> Unit,
     onSelectItem: (ResolvedMediaItem) -> Unit,
     onProcess: () -> Unit,
+    onDownload: () -> Unit,
     onUpdateSettings: (ProcessingSettings) -> Unit,
     onOpenLogin: () -> Unit,
     onVerificationCompleted: (Map<String, String>) -> Unit,
@@ -249,18 +251,26 @@ private fun DouyinRemoverContent(
                     )
                 }
 
-                item(key = "process") {
+                item(key = "actions") {
                     Spacer(Modifier.height(4.dp))
-                    ProcessButton(
-                        onClick = onProcess,
-                        enabled = uiState.selectedItem != null && !uiState.isProcessing,
-                        isProcessing = uiState.isProcessing
+                    ActionButtons(
+                        onDownload = onDownload,
+                        onProcess = onProcess,
+                        isDownloading = uiState.isDownloading,
+                        isProcessing = uiState.isProcessing,
+                        enabled = uiState.selectedItem != null && !uiState.isProcessing && !uiState.isDownloading
                     )
                 }
             }
 
             if (uiState.isProcessing) {
                 item(key = "processing") { ProcessingCard(uiState.progressText) }
+            }
+
+            uiState.downloadPath?.let { path ->
+                item(key = "downloadSuccess") {
+                    DownloadSuccessCard(path)
+                }
             }
 
             uiState.outputPath?.let { path ->
@@ -843,50 +853,123 @@ private fun ResolvedItemCard(
 }
 
 /**
- * 主操作按钮：全宽 56dp，按压缩放反馈。
+ * 操作按钮区：下载（仅保存视频）与去除人声（下载 + 分离导出伴奏）两个独立操作。
+ * 去人声是可选项；只想保存原视频时点「下载」即可。
  */
 @Composable
-private fun ProcessButton(
-    onClick: () -> Unit,
-    enabled: Boolean,
-    isProcessing: Boolean
+private fun ActionButtons(
+    onDownload: () -> Unit,
+    onProcess: () -> Unit,
+    isDownloading: Boolean,
+    isProcessing: Boolean,
+    enabled: Boolean
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed && enabled) 0.96f else 1f,
+        targetValue = if (isPressed && enabled) 0.98f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "processScale"
+        label = "actionsScale"
     )
 
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        interactionSource = interactionSource,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .scale(scale),
-        shape = MaterialTheme.shapes.large,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    Row(
+        modifier = Modifier.fillMaxWidth().scale(scale),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
     ) {
-        if (isProcessing) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                strokeWidth = 2.5.dp,
-                color = MaterialTheme.colorScheme.onPrimary
+        FilledTonalButton(
+            onClick = onDownload,
+            enabled = enabled,
+            interactionSource = interactionSource,
+            modifier = Modifier.weight(1f).height(56.dp),
+            shape = MaterialTheme.shapes.large,
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.width(10.dp))
-            Text("处理中...", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        } else {
-            Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("下载并去人声", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        ) {
+            if (isDownloading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.5.dp,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            } else {
+                Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (isDownloading) "下载中..." else "下载",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Button(
+            onClick = onProcess,
+            enabled = enabled,
+            modifier = Modifier.weight(2f).height(56.dp),
+            shape = MaterialTheme.shapes.large,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        ) {
+            if (isProcessing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.5.dp,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("处理中...", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            } else {
+                Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("去除人声", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+/** 下载完成卡片（仅下载、未做分离） */
+@Composable
+private fun DownloadSuccessCard(path: String) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        tonalElevation = 3.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(Spacing.cardP),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.itemGap)
+        ) {
+            Icon(
+                Icons.Rounded.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(28.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "下载完成",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Text(
+                    path,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }

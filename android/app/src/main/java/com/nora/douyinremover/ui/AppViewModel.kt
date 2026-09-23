@@ -1,6 +1,10 @@
 package com.nora.douyinremover.ui
 
 import android.app.Application
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nora.douyinremover.audio.AudioProcessor
@@ -28,8 +32,10 @@ data class AppUiState(
     val selectedItem: ResolvedMediaItem? = null,
     val isResolving: Boolean = false,
     val isProcessing: Boolean = false,
+    val isDownloading: Boolean = false,
     val progressText: String = "",
     val outputPath: String? = null,
+    val downloadPath: String? = null,
     val error: String? = null,
     val showVerification: Boolean = false,
     val isLoggedIn: Boolean = false
@@ -167,6 +173,54 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
+        }
+    }
+
+    /** 仅下载选中视频到系统下载目录（不做人声分离） */
+    fun downloadSelected() {
+        val item = _uiState.value.selectedItem ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDownloading = true, error = null, downloadPath = null) }
+            runCatching {
+                val bytes = douyinApi.download(item.url, emptyMap())
+                saveToDownloads(item, bytes)
+            }.onSuccess { path ->
+                _uiState.update { it.copy(isDownloading = false, downloadPath = path) }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(isDownloading = false, error = error.message ?: "下载失败")
+                }
+            }
+        }
+    }
+
+    /** 保存到系统下载目录（Android 10+ 走 MediaStore，公开可见；旧版本存应用目录） */
+    private fun saveToDownloads(item: ResolvedMediaItem, bytes: ByteArray): String {
+        val fileName = "${safeName(item.title)}.${if (item.isImage) "jpg" else "mp4"}"
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(
+                    MediaStore.MediaColumns.MIME_TYPE,
+                    if (item.isImage) "image/jpeg" else "video/mp4"
+                )
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/抖音去人声"
+                )
+            }
+            val collection = if (item.isImage) MediaStore.Downloads.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val uri = resolver.insert(collection, values)
+                ?: throw IllegalStateException("无法创建下载文件")
+            resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: throw IllegalStateException("无法写入下载文件")
+            "下载目录/抖音去人声/$fileName"
+        } else {
+            val dir = File(context.getExternalFilesDir(null), "downloads").apply { mkdirs() }
+            val file = File(dir, fileName)
+            file.writeBytes(bytes)
+            file.absolutePath
         }
     }
 

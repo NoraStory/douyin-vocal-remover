@@ -214,9 +214,13 @@ class OnnxDemucsSeparator(
             longArrayOf(1, CHANNELS.toLong(), SEGMENT_SAMPLES.toLong())
         )
         val result = session.run(Collections.singletonMap(INPUT_NAME, inputTensor))
-        result.use {
-            val raw = (it[0].value as OnnxTensor).floatBuffer
-            // 输出同样 channel-first，转回交错格式
+        result.use { outputs ->
+            // 注意：Result.get(int) 直接返回 OnnxValue；
+            // Kotlin 会把 OnnxValue.getValue() 映射为 .value 属性（返回 float[][][]），
+            // 直接 cast 成 OnnxTensor 会抛 ClassCastException（"floatlll cannot be cast..."）。
+            val outputTensor = outputs.get(0) as OnnxTensor
+            val raw = outputTensor.floatBuffer
+            // 输出同样 channel-first [1, 2, N]，转回交错格式
             val output = FloatArray(SEGMENT_SAMPLES * CHANNELS)
             val left = FloatArray(SEGMENT_SAMPLES)
             val right = FloatArray(SEGMENT_SAMPLES)
