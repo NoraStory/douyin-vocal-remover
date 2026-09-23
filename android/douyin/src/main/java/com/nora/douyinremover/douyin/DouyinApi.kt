@@ -71,7 +71,111 @@ class DouyinApi(
             DouyinTargetType.VIDEO,
             DouyinTargetType.NOTE -> resolveVideoWithRetry(target)
             DouyinTargetType.USER -> resolveUserWithRetry(target)
+            DouyinTargetType.SHARE_TEXT -> resolveShareText(target)
         }
+    }
+
+    /**
+     * 分享口令解析：口令码是服务端签发的令牌，无法离线还原（公开调研结论），
+     * 因此走两级兜底：
+     * 1. 短码廉价试探：https://v.douyin.com/{code}/ 若 302 到 share 页则直接解析
+     * 2. 标题搜索：用口令标题走 general/search 接口找回视频 ID，再 detail 解析
+     * 搜索接口要求登录态；未登录时抛 NeedVerificationException 引导登录。
+     */
+    private suspend fun resolveShareText(target: ParsedDouyinTarget): List<ResolvedMediaItem> {
+        // 1) 短码试探（命中率低但零成本）
+        if (target.id.isNotBlank()) {
+            val shortUrl = "https://v.douyin.com/${target.id}/"
+            Log.i(TAG, "share code probe: $shortUrl")
+            val redirected = runCatching { followRedirect(shortUrl) }.getOrNull()
+            if (!redirected.isNullOrBlank() && redirected.contains("/share/")) {
+                val parsed = DouyinTargetParser().parse(redirected)
+                if (parsed != null && parsed.type != DouyinTargetType.SHARE_TEXT) {
+                    return when (parsed.type) {
+                        DouyinTargetType.USER -> resolveUserWithRetry(parsed)
+                        else -> resolveVideoWithRetry(parsed)
+                    }
+                }
+            }
+        }
+
+        // 2) 标题搜索
+        val title = target.shareTitle
+        if (title.isNullOrBlank()) {
+            throw NeedVerificationException("无法识别分享口令，请复制带链接的分享文本")
+        }
+        Log.i(TAG, "share text title search: author=${target.shareAuthor} title=${title.take(40)}")
+        val results = searchByTitle(title, target.shareAuthor)
+        if (results.isNotEmpty()) return results
+        throw NeedVerificationException("口令解析失败：请复制包含链接的分享文本，或登录后重试标题搜索")
+    }
+
+    /** 标题搜索：general/search 接口（需要登录态）→ 候选 aweme_id → detail 解析 + 标题匹配 */
+    private suspend fun searchByTitle(title: String, author: String?): List<ResolvedMediaItem> {
+        if (!cookieStore.isLoggedIn()) {
+            Log.w(TAG, "title search requires login")
+            throw NeedVerificationException("解析分享口令需要登录抖音，请点击页头「未登录」完成登录")
+        }
+
+        val keyword = title
+            .substringBefore('#')
+            .replace(Regex("[《》「」\\[\\]（）()]"), " ")
+            .trim()
+            .take(24)
+        if (keyword.length < 2) return emptyList()
+
+        val pairs = basePairs("6383")
+        pairs["search_channel"] = "aweme_general"
+        pairs["enable_history"] = "1"
+        pairs["keyword"] = keyword
+        pairs["search_source"] = "tab_search"
+        pairs["query_correct_type"] = "1"
+        pairs["is_filter_search"] = "0"
+        pairs["offset"] = "0"
+        pairs["count"] = "15"
+        pairs["need_filter_settings"] = "1"
+        pairs["list_type"] = "multi"
+
+        val signed = buildSignedRequest(pairs, cookieStore.load(), "https://www.douyin.com/aweme/v1/web/general/search/single/")
+        val response = executeJson<GeneralSearchResponse>(
+            signed.url,
+            cookieStore.load(),
+            "https://www.douyin.com/search/$keyword?type=general",
+            signed.extraHeaders
+        )
+        if (response.statusCode != 0 && response.data.isEmpty()) {
+            Log.w(TAG, "search rejected: ${response.statusCode} ${response.statusMsg}")
+            throw NeedVerificationException("搜索接口要求登录抖音账号，请点击页头「未登录」完成登录")
+        }
+
+        val candidates = response.data.mapNotNull { item ->
+            item.awemeInfo?.awemeId?.takeIf { it.isNotBlank() }
+                ?: item.awemeMixInfo?.mixItems?.firstOrNull()?.awemeId
+        }.distinct()
+        Log.i(TAG, "title search keyword=$keyword candidates=${candidates.size}")
+
+        // 逐条 detail 解析，优先返回标题匹配的视频
+        val keywordCore = keyword.take(8)
+        val matched = mutableListOf<ResolvedMediaItem>()
+        var fallback: List<ResolvedMediaItem>? = null
+        for (id in candidates.take(5)) {
+            val items = runCatching { attemptDetail(id, "6383", cookieStore.load()) }.getOrNull()
+                ?: continue
+            if (items.isEmpty()) continue
+            if (fallback == null) fallback = items
+            val itemTitle = items.firstOrNull()?.title.orEmpty()
+            if (keywordCore.isNotBlank() && itemTitle.contains(keywordCore)) {
+                matched += items
+                Log.i(TAG, "title matched id=$id")
+                break
+            }
+        }
+        if (matched.isNotEmpty()) return matched
+        if (author != null && author.isNotBlank()) {
+            // 标题未命中时，用作者过滤：从作者主页作品里找标题
+            return fallback.orEmpty()
+        }
+        return fallback.orEmpty()
     }
 
     /** 用户在 WebView 中完成验证码/登录后调用：合并收集到的 cookie */

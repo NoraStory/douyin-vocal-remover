@@ -6,12 +6,18 @@ import kotlinx.serialization.Serializable
 enum class DouyinTargetType {
     VIDEO,
     USER,
-    NOTE
+    NOTE,
+    /** 分享口令文本（无明文链接，"复制打开抖音"文案），走短码试探 + 标题搜索 */
+    SHARE_TEXT
 }
 
 data class ParsedDouyinTarget(
     val type: DouyinTargetType,
-    val id: String
+    val id: String,
+    /** 口令标题（《xxx》部分，去掉 # 标签） */
+    val shareTitle: String? = null,
+    /** 口令作者（【xxx的作品】） */
+    val shareAuthor: String? = null
 )
 
 data class ResolvedMediaItem(
@@ -40,6 +46,29 @@ data class AwemePostResponse(
     val maxCursor: Long = 0,
     @SerialName("has_more")
     val hasMore: Int = 0
+)
+
+@Serializable
+data class GeneralSearchResponse(
+    val data: List<SearchItem> = emptyList(),
+    @SerialName("status_code")
+    val statusCode: Int = 0,
+    @SerialName("status_msg")
+    val statusMsg: String? = null
+)
+
+@Serializable
+data class SearchItem(
+    @SerialName("aweme_info")
+    val awemeInfo: AwemeItem? = null,
+    @SerialName("aweme_mix_info")
+    val awemeMixInfo: AwemeMixInfo? = null
+)
+
+@Serializable
+data class AwemeMixInfo(
+    @SerialName("mix_items")
+    val mixItems: List<AwemeItem> = emptyList()
 )
 
 @Serializable

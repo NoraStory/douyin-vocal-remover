@@ -11,10 +11,12 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -531,7 +533,7 @@ private fun InputSection(
                 placeholder = {
                     Text(
                         when (searchMode) {
-                            SearchMode.LINK -> "粘贴抖音分享链接或口令"
+                            SearchMode.LINK -> "粘贴抖音链接、口令或分享文本"
                             SearchMode.VIDEO_ID -> "输入纯数字视频/图文 ID"
                             SearchMode.USER_ID -> "输入用户主页链接或 sec_user_id"
                         },
@@ -548,6 +550,37 @@ private fun InputSection(
                     cursorColor = MaterialTheme.colorScheme.primary
                 )
             )
+
+            // ── 分享口令识别提示 ──
+            val isShareText = input.contains("复制打开抖音") ||
+                Regex("[0-9A-Za-z]@T\\.l[0-9A-Za-z]").containsMatchIn(input)
+            AnimatedVisibility(
+                visible = isShareText && !isResolving,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.small)
+                        .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Outlined.Link,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        "已识别分享口令：将按标题搜索并匹配视频（需登录抖音）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
 
             // ── 操作按钮：粘贴 1/3 + 解析 2/3 ──
             Row(
@@ -679,7 +712,7 @@ private fun EmptyStateHint() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                "支持分享链接、视频 ID 与用户主页三种方式",
+                "支持分享链接、分享口令、视频 ID 与用户主页",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
             )
