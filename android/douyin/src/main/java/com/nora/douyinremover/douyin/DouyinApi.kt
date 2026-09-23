@@ -435,7 +435,9 @@ class DouyinApi(
 
     private fun mapAwemeItem(item: AwemeItem): List<ResolvedMediaItem> {
         val result = mutableListOf<ResolvedMediaItem>()
-        // 每个码率取第一个 URL（url_list 其余是同内容的 CDN 镜像，展开会造成重复结果）
+        // 每个码率取第一个 URL（url_list 其余是同内容的 CDN 镜像，展开会造成重复结果）；
+        // 另有 downloadAddr（无水印保存地址）作为备选条目——部分 play_addr 流缺音频轨，
+        // downloadAddr 通常是完整音视频，降级时多一个候选。
         item.video?.bitRate?.forEach { bitRate ->
             bitRate.playAddr.urlList.firstOrNull()?.let { url ->
                 result += ResolvedMediaItem(
@@ -445,6 +447,16 @@ class DouyinApi(
                     height = bitRate.playAddr.height,
                     isWatermarkFree = bitRate.downloadAddr != null,
                     qualityLabel = "${bitRate.playAddr.width}x${bitRate.playAddr.height}"
+                )
+            }
+            bitRate.downloadAddr?.urlList?.firstOrNull()?.let { url ->
+                result += ResolvedMediaItem(
+                    title = item.desc,
+                    url = normalizeUrl(url),
+                    width = bitRate.downloadAddr?.width ?: bitRate.playAddr.width,
+                    height = bitRate.downloadAddr?.height ?: bitRate.playAddr.height,
+                    isWatermarkFree = true,
+                    qualityLabel = "${bitRate.downloadAddr?.width ?: bitRate.playAddr.width}x${bitRate.downloadAddr?.height ?: bitRate.playAddr.height} 无水印"
                 )
             }
         }

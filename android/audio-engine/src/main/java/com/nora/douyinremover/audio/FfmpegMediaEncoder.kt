@@ -83,8 +83,23 @@ class FfmpegMediaEncoder : MediaEncoder {
         val command = arguments.joinToString(" ") { quoteArgument(it) }
         val session = FFmpegKit.execute(command)
         if (!ReturnCode.isSuccess(session.returnCode)) {
+            val logs = session.allLogsAsString
+            // 输入视频没有音频轨（或音频编码不受支持）时，ffmpeg 输出为空流；
+            // 抛专用异常让上层自动降级尝试其他码率
+            if (logs.contains("Output file does not contain any stream") ||
+                logs.contains("matches no streams")
+            ) {
+                throw NoAudioTrackException("该视频没有可用的音频轨道")
+            }
+            // 其他失败：截取日志末尾的关键错误行，避免把整个 ffmpeg 配置日志倒给用户
+            val keyLines = logs.lines()
+                .map { it.trim() }
+                .filter { it.startsWith("Error") || it.contains("error") || it.contains("Invalid") }
+                .takeLast(3)
+                .joinToString("; ")
             throw IllegalStateException(
-                "FFmpeg 执行失败: ${session.allLogsAsString}"
+                if (keyLines.isNotBlank()) "FFmpeg 执行失败: $keyLines"
+                else "FFmpeg 执行失败: ${session.returnCode}"
             )
         }
     }

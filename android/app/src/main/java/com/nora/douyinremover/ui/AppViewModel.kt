@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nora.douyinremover.audio.AudioProcessor
 import com.nora.douyinremover.audio.FfmpegMediaEncoder
+import com.nora.douyinremover.audio.NoAudioTrackException
 import com.nora.douyinremover.audio.OnnxDemucsSeparator
 import com.nora.douyinremover.audio.SeparationRequest
 import com.nora.douyinremover.douyin.DouyinApi
@@ -225,6 +226,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun process(item: ResolvedMediaItem, settings: ProcessingSettings): String {
+        // 候选列表：选中条目优先，其余条目按序降级。
+        // 抖音部分码率地址存在"只有视频流、无音频轨"的情况，
+        // 提取音频失败（NoAudioTrackException）时自动换下一个码率重试。
+        val candidates = buildList {
+            add(item)
+            addAll(_uiState.value.resolvedItems.filter { it.url != item.url })
+        }.distinctBy { it.url }
+
+        var lastError: Exception? = null
+        for (candidate in candidates) {
+            try {
+                return processOne(candidate, settings)
+            } catch (e: NoAudioTrackException) {
+                android.util.Log.w(
+                    "AppViewModel",
+                    "no audio track on ${candidate.qualityLabel}, trying next candidate"
+                )
+                lastError = e
+            }
+        }
+        throw lastError
+            ?: NoAudioTrackException("该视频没有可用的音频轨道，请换一个视频或清晰度")
+    }
+
+    private suspend fun processOne(item: ResolvedMediaItem, settings: ProcessingSettings): String {
         val workDir = File(context.getExternalFilesDir(null), "processing").apply { mkdirs() }
         val input = File(workDir, "source_${System.currentTimeMillis()}.${if (item.isImage) "img" else "mp4"}")
         val bytes = douyinApi.download(item.url, emptyMap())
