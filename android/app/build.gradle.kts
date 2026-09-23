@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Release 签名：读取 android/keystore.password（单行明文），keystore 位于 android/release.keystore。
+// 两者均已 gitignore，不随仓库分发。
+val keystorePassword: String? = rootProject.file("keystore.password")
+    .takeIf { it.exists() }
+    ?.readText()
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
 
 android {
     namespace = "com.nora.douyinremover"
@@ -11,8 +21,8 @@ android {
         applicationId = "com.nora.douyinremover"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         ndk {
             // ffmpeg-kit-maintained 8.x 原生库仅提供 arm64-v8a 与 x86_64（模拟器），
@@ -31,6 +41,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (keystorePassword != null) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = rootProject.file("release.keystore")
+                    storePassword = keystorePassword
+                    keyAlias = "douyinremover"
+                    keyPassword = keystorePassword
+                }
+            }
         }
     }
 

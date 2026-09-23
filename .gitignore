@@ -41,3 +41,7 @@ tools/
 .mimosa/
 android/.mimosa/
 node_modules/
+
+# Release signing (never commit)
+android/release.keystore
+android/keystore.password
