@@ -10,146 +10,192 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * ONNX 模型下载器（模型已从 APK 分离）：
- * - 双源：Gitee 优先，失败切 GitHub（资产地址来自 Release assets）
- * - 断点续传（Range）+ 3 次重试
- * - SHA-256 校验（校验和由 release 的 sha256 清单提供，可选）
- * - 下载到 filesDir/models/<name>.tmp，校验通过后原子 rename
+ * ONNX 模型下载器（模型已从 APK 分离）。
+ *
+ * 直链方案，不依赖 Release API（Gitee 匿名 API 限流极严，不可用）：
+ * 模型资产固定挂在 [UpdateChecker.ModelCatalog.MODELS_TAG] 这个 Release 上，
+ * 下载地址为可预测的标准直链：
+ *  1. Gitee 分卷（国内直连快）：`{file}.part00/.part01/...`（单文件 100MB 限制），
+ *     逐卷下载合并；part00 404 则视为 Gitee 不可用
+ *  2. GitHub 完整文件兜底
+ * 完整性：合并后校验字节数 + SHA-256（清单随应用内置，模型不变则不变）。
  */
 class ModelDownloader {
+
     /**
-     * 下载模型到 modelsDir。
-     * @param asset 模型资产（文件名/URL/大小）。Gitee 单文件限 100MB，大模型以
-     *   `<name>.onnx.part00/.part01/...` 分卷发布：传入 part00 资产时自动下载
-     *   全部分卷并按序合并成 `<name>.onnx`。
-     * @param allAssets 同一 release 的全部模型资产（用于发现分卷；单文件下载可传空）
-     * @param expectedSha256 期望哈希（hex，null 跳过校验）
+     * 下载模型到 modelsDir/<modelFileName>。
+     * 源优先级：R2 完整文件（配置了 r2.baseUrl）→ Gitee 分卷合并 → GitHub 完整文件。
+     * @param modelFileName 如 "htdemucs_fp32.onnx"（由 separator.requiredModelFileName() 给出）
      * @param onProgress (已下载字节, 总字节)
      * @param isCancelled 取消标志
-     * @return 最终模型文件
+     * @throws DownloadCancelledException 用户取消
      */
-    suspend fun download(
-        asset: ModelAsset,
+    suspend fun downloadModel(
+        modelFileName: String,
         modelsDir: File,
-        allAssets: List<ModelAsset> = emptyList(),
-        expectedSha256: String? = null,
         onProgress: (Long, Long) -> Unit = { _, _ -> },
         isCancelled: () -> Boolean = { false }
     ): File = withContext(Dispatchers.IO) {
         modelsDir.mkdirs()
+        val info = UpdateChecker.ModelCatalog.info(modelFileName)
+            ?: throw IllegalArgumentException("未知模型文件: $modelFileName")
+        val target = File(modelsDir, modelFileName)
 
-        // 分卷资产（xxx.onnx.part00）：还原目标名 xxx.onnx，收集同前缀全部分卷
-        val isSplit = asset.fileName.endsWith(".part00") ||
-            Regex("\\.part\\d+$").containsMatchIn(asset.fileName)
-        return@withContext if (isSplit) {
-            val baseName = asset.fileName.substringBeforeLast(".part")
-            val parts = allAssets
-                .filter { it.fileName.startsWith("$baseName.part") }
-                .sortedBy { it.fileName }
-            require(parts.isNotEmpty()) { "分卷资产缺失：${asset.fileName}" }
-            downloadMerged(baseName, parts, modelsDir, expectedSha256, onProgress, isCancelled)
-        } else {
-            downloadSingle(asset, modelsDir, expectedSha256, onProgress, isCancelled)
-        }
-    }
-
-    /** 下载分卷并按序合并为 baseName */
-    private suspend fun downloadMerged(
-        baseName: String,
-        parts: List<ModelAsset>,
-        modelsDir: File,
-        expectedSha256: String?,
-        onProgress: (Long, Long) -> Unit,
-        isCancelled: () -> Boolean
-    ): File = withContext(Dispatchers.IO) {
-        val target = File(modelsDir, baseName)
-        val totalSize = parts.sumOf { it.size }.takeIf { it > 0 } ?: -1L
-        var downloadedTotal = 0L
-
-        // 已完整存在则跳过
-        if (target.exists() && target.length() > 0 &&
-            (totalSize <= 0 || target.length() == totalSize)
-        ) {
-            Log.i(TAG, "model already present: $baseName")
+        // 已存在且字节数吻合：无需下载
+        if (target.exists() && target.length() == info.sizeBytes) {
+            Log.i(TAG, "model already present: $modelFileName")
             return@withContext target
         }
 
-        // 各分卷先落到独立 tmp（支持单卷断点续传），全部就绪后合并
-        val partFiles = mutableListOf<File>()
+        // 主源：Cloudflare R2（完整文件，无分卷）
+        UpdateChecker.ModelCatalog.r2Url(modelFileName)?.let { r2 ->
+            try {
+                return@withContext downloadFull(modelFileName, r2, modelsDir, info, onProgress, isCancelled)
+            } catch (e: DownloadCancelledException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "r2 model download failed: ${e.message}, fallback")
+            }
+        }
+
         try {
-            for (part in parts) {
-                if (isCancelled()) throw DownloadCancelledException()
-                val partFile = downloadSingle(part, modelsDir, expectedSha256 = null,
-                    onProgress = { done, _ ->
-                        onProgress(downloadedTotal + done, totalSize)
-                    },
-                    isCancelled = isCancelled)
-                partFiles.add(partFile)
-                downloadedTotal += partFile.length()
-            }
-
-            // 合并：顺序拼接进最终 tmp，再原子 rename
-            val mergedTmp = File(modelsDir, "$baseName.tmp")
-            java.io.FileOutputStream(mergedTmp).use { out ->
-                for (pf in partFiles) {
-                    pf.inputStream().use { it.copyTo(out, 256 * 1024) }
-                }
-            }
-            if (expectedSha256 != null) {
-                val actual = sha256Of(mergedTmp)
-                require(actual.equals(expectedSha256, ignoreCase = true)) {
-                    "SHA-256 mismatch for $baseName"
-                }
-            }
-            if (target.exists()) target.delete()
-            if (!mergedTmp.renameTo(target)) {
-                mergedTmp.copyTo(target, overwrite = true)
-                mergedTmp.delete()
-            }
-            // 清理分卷
-            partFiles.forEach { it.delete() }
-            onProgress(target.length(), target.length())
-            target
-        } finally {
-            // 合并失败时也清理已下载分卷（下次重来）
-            if (!target.exists()) partFiles.forEach { runCatching { it.delete() } }
+            downloadFromParts(modelFileName, modelsDir, info, onProgress, isCancelled)
+        } catch (e: PartsUnavailableException) {
+            Log.i(TAG, "gitee parts unavailable (${e.message}), fallback to github")
+            downloadFull(
+                modelFileName,
+                UpdateChecker.ModelCatalog.githubUrl(modelFileName),
+                modelsDir, info, onProgress, isCancelled
+            )
         }
     }
 
-    /** 单文件下载（断点续传 + 重试 + SHA-256） */
-    private suspend fun downloadSingle(
-        asset: ModelAsset,
+    // ---- Gitee 分卷 ----
+
+    /** Gitee 分卷不可用（part00 404 等），触发 GitHub 兜底 */
+    private class PartsUnavailableException(message: String) : Exception(message)
+
+    private suspend fun downloadFromParts(
+        modelFileName: String,
         modelsDir: File,
-        expectedSha256: String?,
+        info: UpdateChecker.ModelCatalog.ModelInfo,
         onProgress: (Long, Long) -> Unit,
         isCancelled: () -> Boolean
     ): File = withContext(Dispatchers.IO) {
-        val target = File(modelsDir, asset.fileName)
-        if (target.exists() && target.length() == asset.size && asset.size > 0) {
-            Log.i(TAG, "model already present: ${asset.fileName}")
-            return@withContext target
+        // 断点续传粒度 = 单个分卷：完成一个分卷落一个 marker 文件（.partNN），
+        // 未完成的分卷用 .partNN.dl 续传。全部就绪后合并 + 校验。
+        val mergedTmp = File(modelsDir, "$modelFileName.tmp")
+        var downloadedTotal = 0L
+        var lastReport = 0L
+        val partFiles = mutableListOf<File>()
+
+        fun report() {
+            if (downloadedTotal - lastReport > 1024 * 1024) {
+                lastReport = downloadedTotal
+                onProgress(downloadedTotal, info.sizeBytes)
+            }
         }
 
-        val tmp = File(modelsDir, asset.fileName + ".tmp")
+        var index = 0
+        while (index <= MAX_PARTS) {
+            if (isCancelled()) throw DownloadCancelledException()
+            val partName = "$modelFileName.part%02d".format(index)
+            val partDone = File(modelsDir, partName)
+            if (partDone.exists() && partDone.length() > 0) {
+                partFiles.add(partDone)
+                downloadedTotal += partDone.length()
+                report()
+                index++
+                continue
+            }
+            val partUrl = UpdateChecker.ModelCatalog.giteePartUrl(modelFileName, index)
+            val partDl = File(modelsDir, "$partName.dl")
+            try {
+                httpDownloadToFile(
+                    url = partUrl, dest = partDl, resume = partDl.exists(),
+                    onDelta = { delta ->
+                        downloadedTotal += delta
+                        report()
+                    },
+                    isCancelled = isCancelled
+                )
+            } catch (e: Http404Exception) {
+                if (index == 0) {
+                    throw PartsUnavailableException("gitee part00 404")
+                }
+                break // 分卷取完
+            }
+            if (!partDl.renameTo(partDone)) {
+                partDl.copyTo(partDone, overwrite = true)
+                partDl.delete()
+            }
+            partFiles.add(partDone)
+            downloadedTotal = partFiles.sumOf { it.length() }
+            report()
+            index++
+        }
+
+        require(partFiles.isNotEmpty()) { "没有下载到任何分卷" }
+
+        // 合并 + 校验 + 原子落位
+        FileOutputStream(mergedTmp).use { out ->
+            for (pf in partFiles) pf.inputStream().use { it.copyTo(out, 256 * 1024) }
+        }
+        verify(mergedTmp, info, modelFileName)
+        val target = File(modelsDir, modelFileName)
+        if (target.exists()) target.delete()
+        if (!mergedTmp.renameTo(target)) {
+            mergedTmp.copyTo(target, overwrite = true)
+            mergedTmp.delete()
+        }
+        partFiles.forEach { it.delete() }
+        onProgress(target.length(), info.sizeBytes)
+        Log.i(TAG, "model merged from ${partFiles.size} parts: $modelFileName")
+        target
+    }
+
+    // ---- 完整文件下载（R2 主源 / GitHub 兜底共用）----
+
+    private suspend fun downloadFull(
+        modelFileName: String,
+        url: String,
+        modelsDir: File,
+        info: UpdateChecker.ModelCatalog.ModelInfo,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean
+    ): File = withContext(Dispatchers.IO) {
+        val target = File(modelsDir, modelFileName)
+        val tmp = File(modelsDir, "$modelFileName.dl")
+        var have = if (tmp.exists()) tmp.length() else 0L
+        if (have >= info.sizeBytes && info.sizeBytes > 0) {
+            tmp.delete(); have = 0
+        }
+        var lastReport = 0L
         var lastError: Exception? = null
         repeat(MAX_RETRIES) { attempt ->
             if (isCancelled()) throw DownloadCancelledException()
             try {
-                if (attempt > 0) {
-                    Log.w(TAG, "model download retry #$attempt for ${asset.fileName}")
-                }
-                downloadOnce(asset, tmp, onProgress, isCancelled)
-                if (expectedSha256 != null) {
-                    val actual = sha256Of(tmp)
-                    require(actual.equals(expectedSha256, ignoreCase = true)) {
-                        "SHA-256 mismatch for ${asset.fileName}"
-                    }
-                }
+                if (attempt > 0) Log.w(TAG, "model download retry #$attempt")
+                have = if (tmp.exists()) tmp.length() else 0L
+                lastReport = have
+                httpDownloadToFile(
+                    url = url, dest = tmp, resume = tmp.exists(),
+                    onDelta = { delta ->
+                        have += delta
+                        if (have - lastReport > 1024 * 1024) {
+                            lastReport = have
+                            onProgress(have, info.sizeBytes)
+                        }
+                    },
+                    isCancelled = isCancelled
+                )
+                verify(tmp, info, modelFileName)
                 if (target.exists()) target.delete()
                 if (!tmp.renameTo(target)) {
                     tmp.copyTo(target, overwrite = true)
                     tmp.delete()
                 }
+                onProgress(target.length(), info.sizeBytes)
                 return@withContext target
             } catch (e: DownloadCancelledException) {
                 throw e
@@ -161,61 +207,69 @@ class ModelDownloader {
         throw lastError ?: IllegalStateException("模型下载失败")
     }
 
-    private fun downloadOnce(
-        asset: ModelAsset,
-        tmp: File,
-        onProgress: (Long, Long) -> Unit,
+    // ---- HTTP 基础 ----
+
+    private class Http404Exception : Exception("HTTP 404")
+
+    /**
+     * 下载 URL 到 dest（支持 Range 续传）。
+     * 404 抛 [Http404Exception]；其余非 2xx 抛异常（可重试）。
+     */
+    private fun httpDownloadToFile(
+        url: String,
+        dest: File,
+        resume: Boolean,
+        onDelta: (Long) -> Unit,
         isCancelled: () -> Boolean
     ) {
-        var downloaded = if (tmp.exists()) tmp.length() else 0L
-        val url = buildUrl(asset.url)
+        UrlGuard.requireSafe(url)
+        var have = if (resume && dest.exists()) dest.length() else 0L
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
             instanceFollowRedirects = true
-            if (downloaded > 0) setRequestProperty("Range", "bytes=$downloaded-")
+            setRequestProperty("User-Agent", "douyin-vocal-remover")
+            if (have > 0) setRequestProperty("Range", "bytes=$have-")
         }
-        conn.connect()
-        val code = conn.responseCode
-        require(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) {
-            "HTTP $code"
-        }
-        if (code == HttpURLConnection.HTTP_OK) downloaded = 0 // 无续传支持，重头写
-
-        val total = if (code == 206) {
-            val range = conn.getHeaderField("Content-Range")
-            range?.substringAfterLast('/')?.toLongOrNull() ?: -1L
-        } else {
-            conn.contentLengthLong.takeIf { it > 0 }?.let { it + downloaded } ?: -1L
-        }
-
-        conn.inputStream.use { input ->
-            FileOutputStream(tmp, downloaded > 0).use { out ->
-                val buffer = ByteArray(128 * 1024)
-                var lastReport = 0L
-                while (true) {
-                    if (isCancelled()) {
-                        conn.disconnect()
-                        throw DownloadCancelledException()
-                    }
-                    val read = input.read(buffer)
-                    if (read == -1) break
-                    out.write(buffer, 0, read)
-                    downloaded += read
-                    if (downloaded - lastReport > 1024 * 1024) {
-                        lastReport = downloaded
-                        onProgress(downloaded, total)
-                    }
-                }
-                out.flush()
-                onProgress(downloaded, total)
+        try {
+            val code = conn.responseCode
+            when {
+                code == HttpURLConnection.HTTP_NOT_FOUND -> throw Http404Exception()
+                code == HttpURLConnection.HTTP_OK -> have = 0 // 服务端不支持续传，重头写
+                code != HttpURLConnection.HTTP_PARTIAL ->
+                    throw IllegalStateException("HTTP $code")
             }
+            conn.inputStream.use { input ->
+                val out = FileOutputStream(dest, have > 0)
+                try {
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) {
+                        if (isCancelled()) throw DownloadCancelledException()
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        out.write(buffer, 0, read)
+                        have += read
+                        onDelta(read.toLong())
+                    }
+                    out.flush()
+                } finally {
+                    out.close()
+                }
+            }
+        } finally {
+            conn.disconnect()
         }
-        conn.disconnect()
     }
 
-    /** 公开仓库的附件直链匿名可下，无需令牌（令牌编译进 APK 会被反编译提取） */
-    private fun buildUrl(url: String): String = url
+    private fun verify(file: File, info: UpdateChecker.ModelCatalog.ModelInfo, name: String) {
+        require(file.length() == info.sizeBytes) {
+            "$name 字节数不符（${file.length()} != ${info.sizeBytes}）"
+        }
+        val actual = sha256Of(file)
+        require(actual.equals(info.sha256, ignoreCase = true)) {
+            "$name SHA-256 校验失败，下载已损坏，请重试"
+        }
+    }
 
     private fun sha256Of(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -233,5 +287,6 @@ class ModelDownloader {
     private companion object {
         const val TAG = "ModelDownloader"
         const val MAX_RETRIES = 3
+        const val MAX_PARTS = 32
     }
 }

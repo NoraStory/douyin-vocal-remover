@@ -51,7 +51,19 @@ class OnnxDemucsSeparator(
     private val activeModelFileName: String by lazy {
         // fp32 模型 231MB，CPU EP 加载后 RSS 约 1.2GB，低内存设备直接被系统 OOM 杀掉；
         // fp16 模型 122MB，权重减半，低内存设备强制使用。
-        if (isLowMemoryDevice) fp16ModelFileName else fp32ModelFileName
+        // 按内存档位选首选模型；若首选未下载但另一档位已存在，直接复用已有模型，
+        // 避免让用户为几百 MB 的重复下载干等（音质差异可接受）。
+        val fp32Ready = File(modelsDir, fp32ModelFileName).let { it.exists() && it.length() > 0 }
+        val fp16Ready = File(modelsDir, fp16ModelFileName).let { it.exists() && it.length() > 0 }
+        when {
+            !isLowMemoryDevice && fp32Ready -> fp32ModelFileName
+            isLowMemoryDevice && fp16Ready -> fp16ModelFileName
+            fp16Ready -> fp16ModelFileName
+            fp32Ready -> fp32ModelFileName
+            // 都未下载：按内存档位决定要下载哪个
+            !isLowMemoryDevice -> fp32ModelFileName
+            else -> fp16ModelFileName
+        }
     }
 
     /** 模型已从 APK 分离，统一从 filesDir/models 读取（由 ModelDownloader 首次下载） */

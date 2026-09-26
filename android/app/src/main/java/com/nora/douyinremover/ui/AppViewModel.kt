@@ -24,7 +24,6 @@ import com.nora.douyinremover.updater.ApkDownloader
 import com.nora.douyinremover.updater.ApkInstaller
 import com.nora.douyinremover.updater.CancelFlag
 import com.nora.douyinremover.updater.DownloadCancelledException
-import com.nora.douyinremover.updater.ModelAsset
 import com.nora.douyinremover.updater.ModelDownloader
 import com.nora.douyinremover.updater.UpdateCheckWorker
 import com.nora.douyinremover.updater.UpdateChecker
@@ -154,23 +153,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 下载缺失的模型（双源 + 断点续传 + 分卷合并 + SHA-256），完成后自动就绪 */
+    /** 下载缺失的模型（R2 主源 / Gitee 分卷 / GitHub 兜底 + 断点续传 + SHA-256），完成后自动就绪 */
     fun downloadModel() {
         if (_uiState.value.modelDownloadProgress != null) return
         viewModelScope.launch {
             _uiState.update { it.copy(modelDownloadProgress = Triple(0L, -1L, false), modelDownloadError = null) }
             runCatching {
-                val assets = updateChecker.fetchModelAssets()
-                val wanted = _uiState.value.modelFileName // 如 htdemucs_fp32.onnx
-                // 匹配优先级：精确文件名 → 同名分卷（Gitee 100MB 限制拆卷）→ 任意模型资产
-                val target = assets.firstOrNull { it.fileName == wanted }
-                    ?: assets.firstOrNull { it.fileName.startsWith("$wanted.part") }
-                    ?: assets.firstOrNull { it.fileName.endsWith(".onnx") || it.fileName.endsWith(".part00") }
-                    ?: throw IllegalStateException("Release 中没有找到模型资产，请稍后重试")
-                modelDownloader.download(
-                    asset = target,
+                modelDownloader.downloadModel(
+                    modelFileName = _uiState.value.modelFileName,
                     modelsDir = separator.modelsDir,
-                    allAssets = assets,
                     onProgress = { done, total ->
                         _uiState.update { it.copy(modelDownloadProgress = Triple(done, total, false)) }
                     },

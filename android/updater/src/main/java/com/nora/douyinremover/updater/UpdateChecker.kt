@@ -24,13 +24,6 @@ data class UpdateInfo(
     val source: String
 )
 
-/** 模型资产下载地址 */
-data class ModelAsset(
-    val fileName: String,
-    val url: String,
-    val size: Long
-)
-
 /**
  * 双源版本检测：Gitee 优先（国内直连快），失败/超时自动切 GitHub。
  *
@@ -56,26 +49,48 @@ class UpdateChecker(
         checkGitee() ?: checkGithub()
     }
 
-    /** 拉取模型资产列表（从最新 release 的 assets 中筛选模型文件） */
-    suspend fun fetchModelAssets(): List<ModelAsset> = withContext(Dispatchers.IO) {
-        val errors = mutableListOf<String>()
-        val giteeBody = if (giteeConfigured()) {
-            runCatching { fetchJson(giteeLatestUrl()) }
-                .onFailure { errors.add("gitee: ${it.message}") }
-                .getOrNull()
-        } else null
-        val githubBody = runCatching { fetchJson(githubLatestUrl()) }
-            .onFailure { errors.add("github: ${it.message}") }
-            .getOrNull()
+    /**
+     * 模型资产目录。下载源优先级（全部为标准直链，不依赖 Release API）：
+     *  1. Cloudflare R2（主源，local.properties 配 r2.baseUrl 时启用；
+     *     存储免费、流量免费、单文件无大小限制）
+     *  2. Gitee 分卷直链（国内直连快；单文件 100MB 限制，故为 .partNN 分卷）
+     *  3. GitHub 完整文件直链
+     * sha256 为发布时清单值，用于下载后完整性校验。
+     */
+    object ModelCatalog {
+        /** Gitee/GitHub 兜底模型资产所在 Release（首建于 v1.5.0；模型更新时换 tag 并同步上传） */
+        const val MODELS_TAG = "v1.5.0"
 
-        fetchReleaseAssets(giteeBody, githubBody).ifEmpty {
-            // 双源都拿不到模型资产时，抛出带原因的异常（而不是静默返回空列表），
-            // 让用户看到"为什么失败"而不是误导性的"没有资产"
-            throw IllegalStateException(
-                if (errors.isEmpty()) "Release 中没有找到模型资产"
-                else "模型资产获取失败（${errors.joinToString("; ")}）"
+        data class ModelInfo(val sizeBytes: Long, val sha256: String)
+
+        val MODELS: Map<String, ModelInfo> = mapOf(
+            "htdemucs_fp32.onnx" to ModelInfo(
+                sizeBytes = 242582207L,
+                sha256 = "16702ec26ec31b5e59bca7bb36bb3f83dbfda752fba5ddea992fd6b52a7fa463"
+            ),
+            "htdemucs_fp16.onnx" to ModelInfo(
+                sizeBytes = 128183146L,
+                sha256 = "2ad4059ef87fdf07abb67e3dad428eb509727cfede8ad895f61d6ac847755623"
             )
-        }
+        )
+
+        fun info(fileName: String): ModelInfo? = MODELS[fileName]
+
+        /** R2 主源直链（未配置 r2.baseUrl 时返回 null，走 Gitee/GitHub 兜底） */
+        fun r2Url(fileName: String): String? =
+            BuildConfig.R2_MODEL_BASE.takeIf { it.isNotBlank() }?.let { base ->
+                base.trimEnd('/') + "/" + fileName
+            }
+
+        /** Gitee 分卷直链（part 从 0 起，part00 不存在则 Gitee 不可用） */
+        fun giteePartUrl(fileName: String, part: Int): String =
+            "https://gitee.com/${BuildConfig.GITEE_OWNER}/${BuildConfig.GITEE_REPO}" +
+                "/releases/download/$MODELS_TAG/$fileName.part%02d".format(part)
+
+        /** GitHub 完整文件直链 */
+        fun githubUrl(fileName: String): String =
+            "https://github.com/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}" +
+                "/releases/download/$MODELS_TAG/$fileName"
     }
 
     // ---- Gitee ----
@@ -137,8 +152,10 @@ class UpdateChecker(
 
     private fun checkGithubWeb(): UpdateInfo? {
         return runCatching {
+            val url = "https://github.com/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}/releases/latest"
+            UrlGuard.requireSafe(url)
             val request = Request.Builder()
-                .url("https://github.com/${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO}/releases/latest")
+                .url(url)
                 .header("User-Agent", "douyin-vocal-remover")
                 .head()
                 .build()
@@ -161,6 +178,7 @@ class UpdateChecker(
     // ---- 解析 ----
 
     private fun fetchJson(url: String): String {
+        UrlGuard.requireSafe(url)
         val request = Request.Builder()
             .url(url)
             .header("Accept", "application/json")
@@ -173,6 +191,7 @@ class UpdateChecker(
     }
 
     private fun fetchText(url: String): String {
+        UrlGuard.requireSafe(url)
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) douyin-vocal-remover")
@@ -201,26 +220,6 @@ class UpdateChecker(
             releaseNotes = notes,
             source = source
         )
-    }
-
-    private fun fetchReleaseAssets(vararg bodies: String?): List<ModelAsset> {
-        for (body in bodies) {
-            if (body.isNullOrBlank()) continue
-            val parsed = runCatching {
-                val root = json.parseToJsonElement(body).jsonObject
-                val tag = root["tag_name"]?.jsonPrimitive?.content ?: return@runCatching emptyList()
-                (root["assets"]?.jsonArray ?: return@runCatching emptyList()).map { el ->
-                    val obj = el.jsonObject
-                    ModelAsset(
-                        fileName = obj["name"]?.jsonPrimitive?.content.orEmpty(),
-                        url = obj["browser_download_url"]?.jsonPrimitive?.content.orEmpty(),
-                        size = obj["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: -1L
-                    )
-                }.filter { it.fileName.startsWith("htdemucs_") && it.url.isNotBlank() && tag.isNotBlank() }
-            }.getOrDefault(emptyList())
-            if (parsed.isNotEmpty()) return parsed
-        }
-        return emptyList()
     }
 
     companion object {

@@ -20,6 +20,9 @@ android {
         }
         buildConfigField("String", "GITEE_OWNER", "\"${localProps.getProperty("gitee.owner", "")}\"")
         buildConfigField("String", "GITEE_REPO", "\"${localProps.getProperty("gitee.repo", "")}\"")
+        // Cloudflare R2 模型主源公开直链（如 https://pub-xxx.r2.dev 或绑定的自定义域名），
+        // 未配置时模型下载走 Gitee 分卷 / GitHub 兜底
+        buildConfigField("String", "R2_MODEL_BASE", "\"${localProps.getProperty("r2.baseUrl", "")}\"")
         buildConfigField("String", "GITHUB_OWNER", "\"NoraStory\"")
         buildConfigField("String", "GITHUB_REPO", "\"douyin-vocal-remover\"")
     }

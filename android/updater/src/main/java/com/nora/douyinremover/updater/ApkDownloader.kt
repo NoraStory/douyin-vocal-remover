@@ -29,6 +29,7 @@ class ApkDownloader(
         onProgress: (Long, Long) -> Unit = { _, _ -> },
         isCancelled: () -> Boolean = { false }
     ): File = withContext(Dispatchers.IO) {
+        UrlGuard.requireSafe(url)
         // Gitee 100MB 限制：APK 可能拆成 .part00/.part01 分卷发布。
         // URL 以 .part00 结尾时：依次下载全部分卷（part00、part01……直到 404），
         // 按序合并写入 targetFile。分卷较小，无需断点续传。
