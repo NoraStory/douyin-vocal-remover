@@ -10,7 +10,7 @@ $env:HF_HOME="C:\Users\story\Desktop\视频转音频\.hf_cache"
 The script downloads or loads the `htdemucs` model and writes:
 
 ```text
-android/app/src/main/assets/models/htdemucs_fp32.onnx
+android/app/src/main/assets.models/models/htdemucs_fp32.onnx
 ```
 
 The script always runs the full validation (equivalence + `onnx.checker` +
@@ -48,7 +48,7 @@ The `InstrumentalHTDemucs` wrapper sums all non-vocal sources (`drums`, `bass`,
 `htdemucs_fp32.onnx` is generated and validated. Latest run (PyTorch 2.14.0,
 onnx 1.23.0, onnxruntime 1.30.0):
 
-- **File**: `android/app/src/main/assets/models/htdemucs_fp32.onnx`
+- **File**: `android/app/src/main/assets.models/models/htdemucs_fp32.onnx`
 - **Size**: ~231.3 MB (fp32)
 - **ONNX checker**: PASS
 - **ONNXRuntime CPU inference**: output shape `(1, 2, 343980)`, all finite
@@ -59,3 +59,8 @@ onnx 1.23.0, onnxruntime 1.30.0):
 
 The exported graph is a drop-in for the Android inference path: feed
 `[1, 2, 343980]` stereo float32 @ 44.1 kHz and read back the instrumental.
+
+> **Note**: model files are NOT packaged into the APK anymore (APK stays ~129MB).
+> They are hosted on Cloudflare R2 (`douyin-remover-models` bucket, `models/` prefix,
+> served via `wanghaodatastorage.dpdns.org`) and downloaded by the app on first launch.
+> After re-export, upload the new `.onnx` to R2 and update `ModelCatalog` sizes/SHA-256 in the updater module.

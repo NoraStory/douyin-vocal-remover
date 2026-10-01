@@ -5,9 +5,15 @@
 #   - Gitee 同步需要环境变量 GITEE_TOKEN（私人令牌，scope: projects）
 #   - local.properties 中 gitee.owner / gitee.repo（App 内匿名检测用，不含令牌；
 #     令牌绝不写入 App——公开仓库的 Release 检测与附件下载均匿名可用）
+# 模型托管：模型文件由 Cloudflare R2 托管（douyin-remover-models 桶，
+#   经 wanghaodatastorage.dpdns.org 分发），本脚本默认不上传模型。
+#   仅当模型本身更新时加 -IncludeModels 参数上传到 GitHub Release 一次性资产。
+# Gitee 经验：仓库附件总配额 1GB、单文件 100MB——历史 Release 的 APK 分卷
+#   用完即删，避免配额打满。
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [string]$NotesFile = ""
+    [string]$NotesFile = "",
+    [switch]$IncludeModels   # 仅模型更新时使用：把 .onnx 上传到 GitHub Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,14 +47,16 @@ $notesArgs = @()
 if ($NotesFile -and (Test-Path $NotesFile)) { $notesArgs += @("--notes-file", (Resolve-Path $NotesFile)) }
 else { $notesArgs += @("--notes", "Release $tag") }
 
-# 模型资产只在首次发布时上传（后续版本复用既有资产，避免重复上传 350MB）
+# 模型托管在 R2，默认不上传；仅 -IncludeModels 时上传（配合 ModelCatalog 更新）
 $existing = gh release view $tag --repo NoraStory/douyin-vocal-remover --json assets --jq '.assets[].name' 2>$null
 $ghAssets = @($apkPath, $shaFile)
-if (-not $existing -or -not ($existing -contains "htdemucs_fp32.onnx")) {
-    $ghAssets += (Join-Path $modelDir "htdemucs_fp32.onnx")
-}
-if (-not $existing -or -not ($existing -contains "htdemucs_fp16.onnx")) {
-    $ghAssets += (Join-Path $modelDir "htdemucs_fp16.onnx")
+if ($IncludeModels) {
+    if (-not $existing -or -not ($existing -contains "htdemucs_fp32.onnx")) {
+        $ghAssets += (Join-Path $modelDir "htdemucs_fp32.onnx")
+    }
+    if (-not $existing -or -not ($existing -contains "htdemucs_fp16.onnx")) {
+        $ghAssets += (Join-Path $modelDir "htdemucs_fp16.onnx")
+    }
 }
 gh release create $tag --repo NoraStory/douyin-vocal-remover --title "$tag" @notesArgs @ghAssets
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

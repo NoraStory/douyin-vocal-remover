@@ -30,7 +30,8 @@
 | ⚡ **双模型自适应** | fp32 真机高精度 / fp16 低内存设备自动降级，4 线程 CPU 推理 + 前台服务保活 |
 | 🎚 **多格式导出** | MP3 320k / 256k / 128k、WAV、FLAC，支持静音裁剪 |
 | 📂 **公开保存 + 历史** | 伴奏存入 `Download/抖音去人声/伴奏/`（文件管理器可见），应用内历史列表一键分享 |
-| 🔄 **自动更新** | 双源检测（Gitee 优先 + GitHub 兜底）每 5 小时，APK 瘦身至 ~129MB，普通更新一键装；落后一个大版本强制更新 |
+| 🔄 **自动更新** | 双源双通道检测（网页版主 + API 备）每 5 小时，普通更新一键装；落后一个大版本强制更新 |
+| ☁️ **模型云托管** | 模型托管于自有域名 Cloudflare R2（国内直连），四级源链自动容灾，SHA-256 校验 |
 | 🎨 **B 站美学** | 主色 #FB7299 + 天蓝 #00AEEC，明暗双主题，弹性动画 |
 
 ## 📥 下载安装
@@ -40,7 +41,7 @@
 前往 [Releases](https://github.com/NoraStory/douyin-vocal-remover/releases/latest) 下载最新版 APK：
 
 ```
-douyin-vocal-remover-v1.2.0.apk
+douyin-vocal-remover-v1.5.5.apk
 ```
 
 安装时允许「未知来源应用」即可。要求 **Android 8.0+（API 26）**、**arm64-v8a** 真机。
@@ -66,7 +67,8 @@ douyin-vocal-remover
 │   │   ├── DouyinWebSession    # WebView 预热 + cookie 白名单收集
 │   │   └── JsSignatureEngine   # bdms.js / acrawler 本地签名
 │   ├── audio-engine/   # 音频引擎：ffmpeg 提取 + ONNX 流式分离 + 编码
-│   └── settings/       # 输出格式等设置
+│   ├── settings/       # 输出格式等设置
+│   └── updater/        # 自动更新 + 模型下载（双源检测 / 断点续传 / 分卷合并 / SHA-256）
 └── model-export/       # PyTorch → ONNX 导出脚本（fp32/fp16）
 ```
 
@@ -100,19 +102,28 @@ douyin-vocal-remover
 | `htdemucs_fp32.onnx` | 231 MB | 内存充裕的真机（≥ 4GB RAM，默认） |
 | `htdemucs_fp16.onnx` | 122 MB | 低内存设备自动选用（< 4GB RAM） |
 
-模型资产随 Release 发布（仅首次上传，后续版本复用），下载时按设备内存自动选档，SHA-256 校验完整性。
+**托管与下载源**：模型托管于 Cloudflare R2（存储 10GB/月免费、流量免费、单文件无大小限制），通过自有域名分发。App 内置四级源链，逐级自动容灾：
+
+1. `https://wanghaodatastorage.dpdns.org/models/…` — 自有域名（Cloudflare CDN，国内直连）
+2. `https://pub-2013c500121b439babffcdaf2007ef39.r2.dev/models/…` — 同桶公开开发地址（域名 DNS 未生效时兜底）
+3. Gitee Release 分卷直链（100MB 限制拆卷，App 自动合并）
+4. GitHub Release 完整文件
+
+下载后校验字节数与 SHA-256（清单内置于 App），损坏自动重试。按设备内存自动选档，已有任一档位模型时直接复用、不重复下载。
 
 **推理加速说明**：模型 92 个卷积里 80 个是 1D 卷积（Demucs 为时域模型），NNAPI/XNNPACK 只加速 2D 卷积，启用后绝大多数算子仍回退 CPU 且引入分区拷贝开销——因此全部走 ORT CPU EP（4 线程 + ALL_OPT），这是该模型的实测最优配置。处理期间应用会挂起前台服务（常驻通知），防止 vivo OriginOS 等激进后台管理系统在切后台/息屏后冻结进程导致推理"卡住"。
 
-模型经 Git LFS 管理，首次构建前运行：
+模型源文件不入库、不打包进 APK（本地保留在 `android/app/src/main/assets.models/`），首次构建前运行导出脚本生成：
 
 ```powershell
 .\.venv\Scripts\python.exe .\model-export\export_demucs_onnx.py
 ```
 
+模型更新（如换模型版本）后，把新 `.onnx` 上传到 R2 桶 `douyin-remover-models` 的 `models/` 前缀下并同步 `ModelCatalog` 中的大小与 SHA-256。
+
 ## 🔄 自动更新
 
-- **双源检测**：Gitee 优先（国内直连），失败自动切 GitHub；每 5 小时周期检测 + 每次冷启动即时检测
+- **双源双通道检测**：Gitee 优先（国内直连），失败自动切 GitHub；每源优先走网页版主通道（Gitee releases 页 / GitHub 302 重定向，不限流），API 降为备选；每 5 小时周期检测 + 每次冷启动即时检测
 - **差异化更新**：模型与 APK 分离，日常更新只下载 ~129MB 的 APK，模型不动
 - **强制更新**：落后一个大版本及以上（如 1.4.x → 1.5.0）时全屏弹窗不可跳过；仅 patch 落后（1.4.0 → 1.4.1）为普通提醒
 - **一键安装**：应用内下载（断点续传）→ 自动拉起系统安装器
@@ -136,6 +147,12 @@ A：不会。人声分离完全在手机本地离线完成，仅解析阶段联�
 
 **Q：支持哪些输入？**
 A：分享链接、分享口令（"复制打开抖音"文案）、纯数字视频 ID、用户主页链接。
+
+**Q：首次启动为什么要下载模型？**
+A：AI 模型（231MB 或 122MB，按手机内存自动选档）体积远超 APK，为让日常更新保持 ~129MB 的轻量包，模型改为首次启动联网下载一次。下载走 Cloudflare CDN 自有域名，断点续传 + SHA-256 校验，之后更新 App 无需重复下载。
+
+**Q：模型下载失败怎么办？**
+A：App 内置四级源链（自有域名 → r2.dev → Gitee 分卷 → GitHub）逐级自动切换，全失败时错误信息会带各源的具体原因。常见情况：开着 VPN 时部分源被限流（Gitee 对数据中心 IP 风控）——关闭 VPN 直连通常即可恢复。
 
 ## ⚖️ 免责声明
 

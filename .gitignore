@@ -29,8 +29,8 @@ build_signature_html.ps1
 check_signature_html.ps1
 model-export/_export_log.txt
 
-# Model binary is managed by Git LFS
-android/app/src/main/assets/models/*.onnx
+# Model binaries: hosted on Cloudflare R2, not in the repo
+android/app/src/main/assets.models/
 
 # OS
 .DS_Store
