@@ -47,16 +47,23 @@ class ModelDownloader {
             return@withContext target
         }
 
-        // 主源：Cloudflare R2（完整文件，无分卷）
-        UpdateChecker.ModelCatalog.r2Url(modelFileName)?.let { r2 ->
+        // 主源：Cloudflare R2 自定义域名；DNS 未生效时退 r2.dev（同一桶）
+        val r2Sources = buildList {
+            UpdateChecker.ModelCatalog.r2Url(modelFileName)?.let { add(it) }
+            add(UpdateChecker.ModelCatalog.r2DevUrl(modelFileName))
+        }
+        var lastR2Error: Exception? = null
+        for (r2 in r2Sources) {
             try {
                 return@withContext downloadFull(modelFileName, r2, modelsDir, info, onProgress, isCancelled)
             } catch (e: DownloadCancelledException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "r2 model download failed: ${e.message}, fallback")
+                Log.w(TAG, "r2 model download failed ($r2): ${e.message}")
+                lastR2Error = e
             }
         }
+        Log.i(TAG, "all r2 sources failed (${lastR2Error?.message}), fallback")
 
         try {
             downloadFromParts(modelFileName, modelsDir, info, onProgress, isCancelled)

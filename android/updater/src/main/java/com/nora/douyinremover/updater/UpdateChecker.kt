@@ -76,11 +76,16 @@ class UpdateChecker(
 
         fun info(fileName: String): ModelInfo? = MODELS[fileName]
 
-        /** R2 主源直链（未配置 r2.baseUrl 时返回 null，走 Gitee/GitHub 兜底） */
+        /** R2 主源直链（自定义域名，未配置 r2.baseUrl 时返回 null，走 Gitee/GitHub 兜底） */
         fun r2Url(fileName: String): String? =
             BuildConfig.R2_MODEL_BASE.takeIf { it.isNotBlank() }?.let { base ->
                 base.trimEnd('/') + "/" + fileName
             }
+
+        /** r2.dev 兜底直链（同一桶的公开开发地址，自定义域名 DNS 未生效时可用） */
+        const val R2_DEV_BASE = "https://pub-2013c500121b439babffcdaf2007ef39.r2.dev/models"
+
+        fun r2DevUrl(fileName: String): String = "$R2_DEV_BASE/$fileName"
 
         /** Gitee 分卷直链（part 从 0 起，part00 不存在则 Gitee 不可用） */
         fun giteePartUrl(fileName: String, part: Int): String =

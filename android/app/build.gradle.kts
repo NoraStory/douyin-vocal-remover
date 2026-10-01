@@ -21,8 +21,8 @@ android {
         applicationId = "com.nora.douyinremover"
         minSdk = 26
         targetSdk = 37
-        versionCode = 15
-        versionName = "1.5.4"
+        versionCode = 16
+        versionName = "1.5.5"
 
         ndk {
             // ffmpeg-kit-maintained 8.x 原生库仅提供 arm64-v8a 与 x86_64（模拟器），
